@@ -1,0 +1,5 @@
+site-agent.env
+*.env
+!.env.example
+.DS_Store
+node_modules/
