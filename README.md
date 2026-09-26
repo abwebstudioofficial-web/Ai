@@ -1,90 +1,103 @@
 # Site Agent for LogistiX
 
-Your own AI operations assistant, powered by Claude. It lives inside your Supabase project and works in the background: it watches the website and the database, fixes problems, analyses orders and ETAs, and messages you when something needs attention. You can also chat with it from the admin panel, or from your phone via Telegram.
+A low-cost operations assistant for LogistiX. It lives inside your Supabase project:
 
-> **Wiring it into the site:** give [`HANDOFF.md`](HANDOFF.md) to the Claude chat that works on the LogistiX code. It contains every step, written to follow your project rules.
+- It checks the website and the database on a schedule and sends you a morning report on Telegram.
+- It alerts you the moment something new breaks.
+- You can ask it questions from the admin panel or from Telegram.
 
-## What it does
+**The scheduled checks use no AI at all.** They are plain database queries and HTTP checks. Claude is only used in two situations:
 
-| When | What happens |
-|---|---|
-| **Every morning at 8:00 (Pakistan time)** | A full sanity check runs, covering the website and its JS/CSS files, database health, failed scheduled jobs, failed Edge Function calls, security settings, and 12 business "watch rules". The agent then investigates anything wrong, reviews orders and ETAs, and sends you a short **morning report**. |
-| **Every 15 minutes** | A quick uptime check (no AI cost). If something **new** breaks (site down, pages blank, fuel-price feed stale...), you get an alert straight away and the agent starts investigating. When it's fixed, you get a "✅ Recovered" message. |
-| **Whenever you ask** | Chat in the **Site Agent** tab or on Telegram: "which containers are late?", "why did the fuel price stop updating?", "check the site for broken pages", "summarise this week's orders". |
+1. **A check finds a NEW problem.** One short call to **Claude Haiku** (the cheapest model) explains it and suggests a fix. That happens once per problem, never again while it stays open.
+2. **You ask a question.** Then the bigger model (`claude-opus-5`) answers, using tools to look into your data, site and code.
 
-What it watches for out of the box. You or the agent can add more rules at any time.
+A day with no new problems makes **zero** AI calls.
+
+> **Wiring it into the site:** give [`HANDOFF.md`](HANDOFF.md) to the Claude chat that works on the LogistiX code.
+
+## What happens when
+
+| When | What happens | AI cost |
+|---|---|---|
+| **08:00 every morning (PKT)** | 21 rule-based checks run: the website and its JS/CSS files, the Supabase API, database health, failed cron jobs, failed Edge Function calls, security settings, and 12 business rules for orders, ETAs, fleet documents, invoices, contracts and the fuel-price feed. A **morning report** goes to Telegram (and email or WhatsApp if you set them up). | **Free.** Plus one Haiku call (≈ US$0.005) only if a problem is new. |
+| **Every 15 minutes** | Quick uptime checks. A new failure sends you an alert with a short explanation. When it's fixed, you get "✅ Recovered". | **Free.** Plus one Haiku call only if a problem is new. |
+| **You ask a question** (dashboard or Telegram) | The agent investigates with tools and answers. Any change it proposes waits for your approval. | ≈ US$0.05 (simple lookup) to ≈ US$0.50 (deep investigation); typically ≈ US$0.15 |
+| **You approve or reject a change** | The change runs (or doesn't). The result is shown to you directly. | **Free** |
+
+Example morning report on a healthy day:
+
+```
+📋 Morning report - Sat, 26 Sept 2026
+
+✅ All 21 checks passed - nothing needs your attention.
+
+📦 Orders: In transit 12 · due today/tomorrow 3 · late 0 · delivered yesterday 5 · new orders yesterday 7
+```
+
+A problem that is still open the next day shows up as `(open since 26 Sept)`, with the fix that was suggested earlier. It is not explained again.
+
+## Estimated monthly cost (normal month)
+
+| Item | Assumption | Cost |
+|---|---|---|
+| Morning checks + 15-minute monitor | 30 reports, about 2,900 monitor runs | **US$0.00** |
+| Explaining new problems (Claude Haiku) | about 5–10 new problems a month, ≈ US$0.005 each | **≈ US$0.03–0.05** |
+| Your questions (Claude Opus 5, medium effort) | 0 questions → US$0; 20 questions × ≈ US$0.15 average | **US$0 – ≈ US$3** |
+| Supabase / Telegram | Everything fits inside normal plan limits; Telegram is free | **US$0.00** |
+| **Total** | | **≈ US$0.05 with no questions; ≈ US$3 if you ask about 20 questions** |
+
+These are estimates. Question cost depends on how much digging a question needs, and a simple lookup is only a few cents. Three things keep it bounded:
+
+- **Hard monthly cap:** `AI_MONTHLY_BUDGET_USD` (default **US$5**). When it's reached, all Site Agent AI calls stop until next month. Checks, reports and alerts keep working.
+- **Spend tracking:** every Claude call is logged with its estimated cost in `agent_ai_calls`. The panel shows "AI this month", and `/cost` on Telegram tells you.
+- **Cheaper questions if you want:** set `AGENT_MODEL=claude-sonnet-5` (roughly half the price per question) or `AGENT_EFFORT=low`. To turn off the automatic explanations entirely, set `AI_EXPLAIN_PROBLEMS=false`; that means zero automatic AI calls ever.
+
+> The separate **✦ Research assistant** already in LogistiX (the `research-agent` function) is not part of Site Agent. It uses Claude Opus 5 plus web searches for every message, and it is **not** covered by this cap.
+
+## What the checks look for
+
+You or the agent can add more rules at any time.
 
 - Orders past their ETA while containers are still undelivered, plus a heads-up list for today and tomorrow
 - Containers stuck at "Picked Up" or "In Transit" for more than 7 days
-- Containers still at "Confirmed" long after their loading date
+- Containers still at "Confirmed" long after their loading date. Today about 1,524 look like old imported data; they're listed under FYI, not as a problem.
 - Driver licences and medicals, and vehicle insurance and registration, expiring within 30 days
 - Vehicles due for service
 - Overdue invoices and expiring customer contracts
-- The daily fuel price not updating (the PSO/HiCetane fetch broke)
+- The daily fuel price not updating
 - Data mistakes: ETA before the order date, duplicate bilty numbers
-
-**First run, from your data today:** no late orders, and 1 overdue invoice. About **1,524 containers are still at "Confirmed" months after their loading date**. That looks like old imported data; the agent will ask you before touching it.
+- Site and platform: pages or JS/CSS missing, API down, failed cron jobs, failed Edge Function calls, tables without row-level security, and optionally Supabase advisors and API error logs
 
 ## Safety: nothing changes without you
 
-You asked for "no limits", but your project rules say live data must never change without your approval. So the agent can **look at everything, but every change waits for your one-click approval** (dashboard button, or `/approve 12` on Telegram).
+- The agent can look at everything, but **every change waits for your one-click approval**. That covers data fixes (always test-run first, showing the exact row count), schema migrations, and code pull requests.
+- Code changes are small pull requests on `maint/...` branches from the latest `main`. It checks `WORKING_ON.md` and open PRs first, and it never merges.
+- It never touches your existing Edge Functions or cron jobs. Anything involving cron, logins or storage always needs your approval.
+- It can't read server files, switch database roles, or approve its own requests. Every action is recorded in an audit log.
 
-- **Data fixes:** it always test-runs them first and tells you exactly how many rows change.
-- **Schema changes:** only as proper Supabase migrations, so they show up in your migration history.
-- **Code fixes:** only as small pull requests on a `maint/...` branch, built on the latest `main`. It never merges; you do. Before starting, it checks `WORKING_ON.md` and open pull requests so it doesn't clash with your other Claude sessions.
-- **Your fuel-price jobs:** it never touches your existing Edge Functions or cron jobs. Anything involving cron, logins or storage always needs your approval, in every mode.
-- **Hard blocks:** it can't read server files, switch database roles, or approve its own requests. Every action is recorded in an audit log.
-
-When you trust it more, change one setting, `AGENT_AUTONOMY`:
-
-| Mode | What runs without asking |
-|---|---|
-| `readonly` (default) | Nothing. Every change needs approval. |
-| `standard` | Small data fixes (one statement, 25 rows or fewer) and opening pull requests. |
-| `full` | Everything, except cron, auth, storage and vault changes. Merging pull requests is still yours. |
-
-## Messages
-
-You can receive alerts, approval requests and the morning report on any mix of channels. Configure whichever you want in `.env.example`:
-
-- **Telegram** (recommended, free). It's two-way: you can chat and approve from your phone.
-- **Email** via Resend.
-- **WhatsApp or SMS** via Twilio.
-- **Slack or Discord.**
-
-## Cost (rough estimate)
-
-- **Claude API:** roughly **US$1–3 per morning check** and a few cents per chat question. The 15-minute monitor costs nothing unless something breaks.
-  - It uses `claude-opus-5`, configurable with `AGENT_MODEL`.
-  - It enables Claude's server-side "fallback" option: if a request is ever declined by a safety filter, the API retries it on a recommended fallback model automatically.
-  - Set a monthly spend limit in the Anthropic console.
-- **Supabase:** small. About 100 function calls a day, well inside normal plan limits.
+Once you trust it more, `AGENT_AUTONOMY` can be relaxed to `standard` or `full`; see `.env.example`.
 
 ## How it works
 
 ```
- pg_cron (08:00 PKT / every 15 min / sweeper)          Admin panel (index.html) · Telegram
-                │                                                     │
-                ▼                                                     ▼
-      site-agent-cron ──► health checks ──► alerts          site-agent-chat / site-agent-telegram
-                │                                                     │
-                └────────────── agent run (queued in DB) ◄───────────┘
-                                      │
-                                      ▼
-                             site-agent-worker  ──►  Claude (claude-opus-5)
-                                      │                 │ tool calls
-                                      ▼                 ▼
-          database (read / approved changes / migrations) · website checks · Supabase logs
-          GitHub (read code, open PRs) · alerts · notifications · memory · watch rules
+ pg_cron (08:00 PKT / every 15 min)                   Admin panel (index.html) · Telegram
+            │                                                    │ your question
+            ▼                                                    ▼
+   site-agent-cron: rule-based checks (SQL + HTTP)      site-agent-chat / site-agent-telegram
+            │                                                    │
+            ├─► alerts + morning report ─► Telegram / email      ▼
+            │                                           site-agent-worker ─► Claude Opus 5 + tools
+            └─► NEW problem only ─► 1 × Claude Haiku           (database, site checks, logs,
+                (explain + suggest fix, no tools)               GitHub PRs, alerts, memory)
 ```
-
-- **Background runs:** every conversation and agent step is saved in the database, so runs survive the Edge Function time limit. A long job simply continues in the next worker.
-- **Memory:** the agent keeps long-term notes. It already knows your stage names, table layout, code constraints and project rules, and it adds to them as it learns.
 
 ## Files
 
-- `supabase/migrations/`: database tables and schedules
-- `supabase/functions/`: the agent, split into 4 Edge Functions plus shared code
+- `supabase/migrations/`: tables (including the AI cost ledger) and schedules
+- `supabase/functions/`: 4 Edge Functions plus shared code
+  - checks and report: `_shared/checks.ts`, `_shared/report.ts`, `_shared/jobs.ts`
+  - the Haiku explanation: `_shared/explain.ts`
+  - the cost cap: `_shared/ai_cost.ts`
 - `web/SiteAgentPanel.jsx`: the admin panel for `index.html`
 - `HANDOFF.md`: step-by-step setup for whoever wires it in
 - `.env.example`: all settings, explained

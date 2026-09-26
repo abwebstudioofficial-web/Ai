@@ -3,7 +3,7 @@ import type { Anthropic, postgres } from "./deps.ts";
 import { db } from "./db.ts";
 import { config } from "./config.ts";
 
-export type RunKind = "chat" | "daily_check" | "monitor_investigate" | "approval_followup";
+export type RunKind = "chat"; // AI runs only happen when someone asks a question
 export type RunStatus = "queued" | "running" | "done" | "error" | "cancelled";
 
 export interface RunRow {

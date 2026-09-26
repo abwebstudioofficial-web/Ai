@@ -15,22 +15,21 @@
 create extension if not exists pg_cron;
 create extension if not exists pg_net with schema extensions;
 
--- Morning sanity check + order/ETA review + report (08:00 PKT).
+-- Morning check (08:00 PKT): rule-based checks + report to Telegram. No AI unless a NEW problem is found.
 select cron.schedule(
   'site-agent-daily',
   '0 3 * * *',
   $$ select public.agent_invoke('site-agent-cron', '{"job":"daily"}'::jsonb) $$
 );
 
--- Quick uptime / critical-rule monitor every 15 minutes (no AI cost unless
--- something new breaks).
+-- Quick uptime / critical-rule monitor every 15 minutes (no AI unless something new breaks).
 select cron.schedule(
   'site-agent-monitor',
   '*/15 * * * *',
   $$ select public.agent_invoke('site-agent-cron', '{"job":"monitor"}'::jsonb) $$
 );
 
--- Safety net: resumes agent runs that were interrupted (e.g. an Edge Function
+-- Safety net: resumes chat answers that were interrupted (e.g. an Edge Function
 -- hit its time limit). Only calls the worker when there is something to do.
 select cron.schedule(
   'site-agent-sweep',
@@ -52,6 +51,7 @@ select cron.schedule(
   $$
   delete from public.agent_health_checks where created_at < now() - interval '30 days';
   delete from public.agent_audit_log     where created_at < now() - interval '180 days';
+  delete from public.agent_ai_calls      where created_at < now() - interval '400 days';
   update public.agent_approvals set status = 'expired'
     where status = 'pending' and created_at < now() - interval '7 days';
   $$

@@ -1,7 +1,6 @@
 import type { Anthropic } from "./deps.ts";
 import { config, githubEnabled, platformApiEnabled } from "./config.ts";
 import { db } from "./db.ts";
-import { type CheckResult, formatChecks } from "./checks.ts";
 
 const AUTONOMY_TEXT = {
   readonly: "APPROVE-EVERYTHING. Investigate freely, but every change (data fix, schema migration, pull request) becomes an " +
@@ -59,7 +58,7 @@ ${capabilities}
 
 # Approvals - autonomy mode: ${config.autonomy.toUpperCase()}
 ${AUTONOMY_TEXT[config.autonomy]}
-When a tool result says "pending_approval", the owner has been sent an approval request. Don't retry it and don't try to get the same effect another way. Carry on with other work, and list the request number in your final answer. The decision will come back to you in this conversation.
+When a tool result says "pending_approval", the owner has been sent an approval request. Don't retry it and don't try to get the same effect another way. Carry on with other work, and list the request number in your final answer. The owner's decision and the result are added to this conversation, so you'll see them the next time they write.
 
 # Alerts and messages
 - create_alert for each distinct issue that needs a human. Things you fixed completely don't need an alert; report them instead. Give each issue a stable dedupe_key, e.g. "rule:orders_past_eta", "site:assets-missing", "order:<order_number>:late", so repeat detections update one alert instead of spamming.
@@ -71,18 +70,11 @@ When a tool result says "pending_approval", the owner has been sent an approval 
 # Writing style
 The team reads your messages on a phone (Telegram, WhatsApp, email) as well as the dashboard. Lead with what matters and be brief and concrete: short bullets, order numbers and counts, no filler. Plain text with light markdown (bold, bullets). No wide tables.
 
-# Morning report (daily check runs)
-In a daily check, your final message IS the report the team receives. Use this structure and drop empty sections:
-*Morning report - <weekday, date>*
-🔴 *Needs action* - most important first, max ~7 bullets, each with what, how many or which, and the suggested action
-🟡 *Keep an eye on*
-✅ *Fixed / healthy* - what you fixed automatically; one line if everything else is fine
-📦 *Orders* - in transit · due today/tomorrow · late, plus one insight (e.g. a transporter or route that is running slow)
-🔐 *Waiting for your approval* - #ids with one line each
-If everything is fine, say so in two or three lines.`;
+# Automatic checks (not you)
+The morning report (08:00) and the 15-minute monitor are rule-based checks that run without you; new problems get a short automatic explanation. When the owner asks about a report or alert, read it (the "Morning report" conversation, list_alerts), re-run run_health_checks if useful, and dig deeper with your tools. Keep answers focused - every step costs money, so don't run broad scans the question doesn't need.`;
 }
 
-async function memoryPrompt(): Promise<string> {
+export async function memoryNotes(): Promise<string> {
   const rows = await db()<{ key: string; content: string }[]>`
     select key, content from public.agent_memory order by key`;
   const notes = rows.length ? rows.map((r) => `- [${r.key}] ${r.content}`).join("\n") : "(none yet)";
@@ -92,7 +84,7 @@ async function memoryPrompt(): Promise<string> {
 export async function buildSystem(): Promise<Anthropic.Beta.BetaTextBlockParam[]> {
   return [
     { type: "text", text: staticPrompt(), cache_control: { type: "ephemeral" } },
-    { type: "text", text: await memoryPrompt() },
+    { type: "text", text: await memoryNotes() },
   ];
 }
 
@@ -125,32 +117,4 @@ export async function todayText(): Promise<string> {
 /** Hidden context block added in front of every user message. */
 export async function contextBlock(channel: string): Promise<Anthropic.Beta.BetaTextBlockParam> {
   return { type: "text", text: `<context>\nNow: ${await nowText()}\nChannel: ${channel}\n</context>` };
-}
-
-// ---- kickoff messages for background runs ----------------------------------------
-
-export async function dailyKickoff(results: CheckResult[]): Promise<string> {
-  const problems = results.filter((r) => r.status === "fail" || r.status === "warn");
-  const infoRules = results.filter((r) => r.name.startsWith("rule:") && r.status === "ok" && r.details);
-  return `It's time for the morning check. Now: ${await nowText()}.
-
-The automatic checks just ran. Results (details are included for anything not OK, and for informational rules that found rows):
-${formatChecks([...results.filter((r) => !infoRules.includes(r)), ...infoRules.map((r) => ({ ...r, status: "warn" as const }))])}
-
-Your tasks, in order:
-1. Site and system health: for every failed or warning check, find the root cause (logs, data, code, recent commits). Fix what you safely can, then verify. Raise an alert for anything that needs a human.
-2. Orders and ETAs: using the data (see public.agent_container_view and the orders table), work out what is late, what is due today or tomorrow, and what is at risk. Compare in-transit time with the typical transit time for that destination or transporter, based on past deliveries. Note anything unusual, such as a transporter or route that is slowing down or volumes changing sharply.
-3. Everything else that needs attention: expiring driver or vehicle documents, overdue invoices, expiring contracts, stale integration data (e.g. fuel prices), data-quality problems. Fix clear-cut data errors when it's safe to do so.
-4. If you spotted a recurring kind of problem that no watch rule covers yet, add a rule with watch_rules.
-5. Resolve alerts whose issues are gone (list_alerts). Then write the morning report as your final message.
-
-Problem count from the automatic checks: ${problems.length}.`;
-}
-
-export async function monitorKickoff(failures: CheckResult[]): Promise<string> {
-  return `The 15-minute monitor just detected new problems. Now: ${await nowText()}.
-
-${formatChecks(failures)}
-
-Investigate right away: confirm the problem is real (re-check it), find the root cause, fix it if you safely can, and verify the fix. Alerts have already been created for these checks. Update them with what you found, and resolve them if they're fixed. Finish with a short summary (3-6 lines) for the team: what broke, why, what you did, and anything they need to do.`;
 }

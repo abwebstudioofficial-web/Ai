@@ -3,12 +3,12 @@
 // reads AND writes through here, so it works with the app's lite Supabase client.
 //
 // Actions:
-//   { action: "summary" }                             -> { conversations, alerts, approvals, health, autonomy }
+//   { action: "summary" }                             -> { conversations, alerts, approvals, health, autonomy, ai spend }
 //   { action: "get_conversation", conversation_id }   -> { messages, run }
 //   { action: "send", message, conversation_id? }     -> { conversation_id, run_id }
 //   { action: "stop", run_id }
 //   { action: "approve" | "reject", approval_id, note? }
-//   { action: "run_check", kind: "daily" | "monitor" }
+//   { action: "run_check", kind: "daily" | "monitor" }  (rule-based; no AI unless a new problem is found)
 //   { action: "update_alert", alert_id, status: "acknowledged" | "resolved" | "open", note? }
 //   { action: "archive", conversation_id }
 import { background, corsHeaders, getUser, isAdmin, json } from "../_shared/http.ts";
@@ -23,7 +23,8 @@ import {
   kickWorker,
 } from "../_shared/runs.ts";
 import { ApprovalError, decideApproval } from "../_shared/approvals.ts";
-import { runMonitor, startDailyCheck } from "../_shared/jobs.ts";
+import { runDailyCheck, runMonitor } from "../_shared/jobs.ts";
+import { monthToDateUsd } from "../_shared/ai_cost.ts";
 import { setAlertStatus } from "../_shared/alerts.ts";
 import { formatChecks } from "../_shared/checks.ts";
 import { db, errorMessage } from "../_shared/db.ts";
@@ -67,6 +68,8 @@ Deno.serve(async (req) => {
           approvals,
           health: { full: health.filter((h) => isFull(h.job)), quick: health.filter((h) => !isFull(h.job)) },
           autonomy: config.autonomy,
+          ai_spend_month_usd: await monthToDateUsd(),
+          ai_budget_usd: config.monthlyBudgetUsd,
         });
       }
 
@@ -140,12 +143,13 @@ Deno.serve(async (req) => {
       }
 
       case "run_check": {
+        // Rule-based - no AI unless a check finds a NEW problem (then one small Haiku call).
         if (body.kind === "monitor") {
-          const { results, investigationConversationId } = await runMonitor();
-          return json({ summary: formatChecks(results, false), conversation_id: investigationConversationId ?? null });
+          const { results, newProblems } = await runMonitor();
+          return json({ summary: formatChecks(results, false), new_problems: newProblems });
         }
-        const { conversationId, runId } = await startDailyCheck(user.id);
-        return json({ conversation_id: conversationId, run_id: runId });
+        const { conversationId } = await runDailyCheck(user.id);
+        return json({ conversation_id: conversationId });
       }
 
       case "update_alert": {

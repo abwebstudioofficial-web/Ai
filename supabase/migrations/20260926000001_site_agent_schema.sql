@@ -117,8 +117,7 @@ create index if not exists agent_messages_conversation_idx on public.agent_messa
 create table if not exists public.agent_runs (
   id               uuid primary key default gen_random_uuid(),
   conversation_id  uuid not null references public.agent_conversations (id) on delete cascade,
-  kind             text not null default 'chat'
-                   check (kind in ('chat', 'daily_check', 'monitor_investigate', 'approval_followup')),
+  kind             text not null default 'chat' check (kind in ('chat')),   -- AI runs only happen when someone asks
   status           text not null default 'queued'
                    check (status in ('queued', 'running', 'done', 'error', 'cancelled')),
   turns            integer not null default 0,
@@ -159,7 +158,9 @@ create table if not exists public.agent_alerts (
   last_seen_at     timestamptz not null default now(),
   notified_at      timestamptz,
   resolved_at      timestamptz,
-  resolution_note  text
+  resolution_note  text,
+  ai_note          text,          -- short AI explanation + suggested fix (written once, when the problem is new)
+  ai_noted_at      timestamptz
 );
 create index if not exists agent_alerts_status_idx on public.agent_alerts (status, last_seen_at desc);
 create unique index if not exists agent_alerts_open_dedupe
@@ -196,6 +197,21 @@ create table if not exists public.agent_audit_log (
   created_at       timestamptz not null default now()
 );
 create index if not exists agent_audit_log_created_idx on public.agent_audit_log (created_at desc);
+
+-- Every Claude call, with its estimated cost (for the monthly budget cap).
+create table if not exists public.agent_ai_calls (
+  id                  bigint generated always as identity primary key,
+  model               text not null,
+  purpose             text not null check (purpose in ('chat', 'explain_problems')),
+  run_id              uuid,
+  input_tokens        integer not null default 0,
+  output_tokens       integer not null default 0,
+  cache_read_tokens   integer not null default 0,
+  cache_write_tokens  integer not null default 0,
+  cost_usd            numeric(12, 6) not null default 0,
+  created_at          timestamptz not null default now()
+);
+create index if not exists agent_ai_calls_created_idx on public.agent_ai_calls (created_at desc);
 
 -- -----------------------------------------------------------------------------
 -- Long-term memory and watch rules
@@ -252,7 +268,7 @@ begin
   foreach t in array array[
     'agent_settings', 'agent_admins', 'agent_conversations', 'agent_messages', 'agent_runs',
     'agent_alerts', 'agent_approvals', 'agent_audit_log', 'agent_memory',
-    'agent_watch_rules', 'agent_health_checks'
+    'agent_watch_rules', 'agent_health_checks', 'agent_ai_calls'
   ] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists "agent admins can read" on public.%I', t);

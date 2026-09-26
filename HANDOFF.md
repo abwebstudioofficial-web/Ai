@@ -27,13 +27,13 @@
 
 | Path | What it is |
 |---|---|
-| `supabase/migrations/20260926000001_site_agent_schema.sql` | New `agent_*` tables, RLS (admins read-only from the browser), helper functions, the `agent_container_view` view, starter watch rules and memory notes. **Does not alter any existing table.** Safe to re-run. |
-| `supabase/migrations/20260926000002_site_agent_cron.sql` | 4 **new** pg_cron jobs: the 08:00 PKT morning check, a 15-minute monitor, a 1-minute sweeper and daily housekeeping. **Ask the owner before applying (rule 5).** |
+| `supabase/migrations/20260926000001_site_agent_schema.sql` | New `agent_*` tables (including the `agent_ai_calls` cost ledger), RLS (admins read-only from the browser), helper functions, the `agent_container_view` view, starter watch rules and memory notes. **Does not alter any existing table.** Safe to re-run. |
+| `supabase/migrations/20260926000002_site_agent_cron.sql` | 4 **new** pg_cron jobs: the 08:00 PKT rule-based morning report, a 15-minute monitor, a 1-minute sweeper and daily housekeeping. **Ask the owner before applying (rule 5).** |
 | `supabase/functions/site-agent-chat` | The dashboard's API (admin-only, verifies the user's session). |
-| `supabase/functions/site-agent-worker` | Runs the AI agent in the background (chunked, so it never hits the Edge Function time limit). |
-| `supabase/functions/site-agent-cron` | Entry point for the scheduled jobs. |
+| `supabase/functions/site-agent-worker` | Answers the owner's questions with the chat model, in the background (chunked, so it never hits the Edge Function time limit). |
+| `supabase/functions/site-agent-cron` | Entry point for the scheduled jobs. Rule-based: no AI unless a check finds a NEW problem, then one Claude Haiku call. |
 | `supabase/functions/site-agent-telegram` | Optional: chat with the agent and approve its requests from Telegram. |
-| `supabase/functions/_shared/` | Agent loop, tools, SQL safety guard, checks, notifications. |
+| `supabase/functions/_shared/` | Checks and report (`checks.ts`, `report.ts`, `jobs.ts`), the Haiku explanation (`explain.ts`), the budget cap (`ai_cost.ts`), chat agent loop, tools, SQL safety guard, notifications. |
 | `web/SiteAgentPanel.jsx` | The admin panel, written to paste straight into `index.html`. |
 | `.env.example` | Every secret/setting, with explanations. |
 
@@ -48,6 +48,7 @@ Then verify (read-only):
 
 ```sql
 select count(*) from public.agent_watch_rules;                              -- 12
+select count(*) from public.agent_ai_calls;                                 -- 0
 select key from public.agent_memory order by key;                           -- 5 notes
 select stage_name, count(*) from public.agent_container_view group by 1;    -- mostly "Confirmed"
 select public.agent_is_admin(id) from public.profiles where role = 'admin'; -- true
@@ -57,10 +58,17 @@ select public.agent_is_admin(id) from public.profiles where role = 'admin'; -- t
 
 Copy `.env.example` to `site-agent.env` and fill it in. **Don't commit the filled-in file.** At minimum set:
 
-- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_API_KEY`: the project may already have this secret, since the research assistant uses it. It's shared by all functions, so keep it.
 - `AGENT_INTERNAL_SECRET`: generate with `openssl rand -hex 32`
 - `SITE_URL`: the live GitHub Pages URL, no trailing slash
+- `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_IDS`: the morning report goes here (see step 8)
 - `AGENT_WALL_CLOCK_MS`: `150000` on the free plan, `400000` on Pro
+
+Leave the cost settings at their defaults unless the owner says otherwise:
+
+- `AI_AUTO_MODEL=claude-haiku-4-5`
+- `AI_MONTHLY_BUDGET_USD=5`
+- `AGENT_MODEL=claude-opus-5` with `AGENT_EFFORT=medium`
 
 Then run:
 
@@ -96,9 +104,9 @@ The owner must do this, or explicitly approve it. It's configuration, not a sche
 
 | Job | Schedule (UTC) | What it does |
 |---|---|---|
-| `site-agent-daily` | `0 3 * * *` = **08:00 PKT** | Full checks, then the AI morning review, then the report sent to the team. It runs after the HiCetane fetch (07:00/07:30 PKT). The PSO diesel job runs at 06:00 UTC = 11:00 PKT. |
-| `site-agent-monitor` | every 15 min | Quick uptime/critical checks. No AI cost unless something new breaks. |
-| `site-agent-sweep` | every minute | Only calls the worker if an agent run was interrupted. Idle otherwise. |
+| `site-agent-daily` | `0 3 * * *` = **08:00 PKT** | Rule-based full checks and the morning report to Telegram. **No AI** unless a check finds a new problem (then one Haiku call, about half a US cent). It runs after the HiCetane fetch (07:00/07:30 PKT). The PSO diesel job runs at 06:00 UTC = 11:00 PKT. |
+| `site-agent-monitor` | every 15 min | Quick uptime/critical checks. No AI unless something new breaks (then one Haiku call). |
+| `site-agent-sweep` | every minute | Only calls the worker if a chat answer was interrupted. Idle otherwise. |
 | `site-agent-retention` | `30 3 * * *` | Deletes old health checks and audit logs, and expires week-old approvals. |
 
 It does **not** touch the three existing jobs. Once the owner says yes, apply it as a migration (name `site_agent_cron`).
@@ -107,23 +115,24 @@ It does **not** touch the three existing jobs. Once the owner says yes, apply it
 
 1. Pull the latest `main`, then create branch `maint/site-agent-panel`.
 2. Add to `WORKING_ON.md`: `- Site Agent panel: adding SiteAgentPanel block after the icon set, NAV_ITEMS entry, VIEW_TITLES entry, admin-only nav filter, view route (branch maint/site-agent-panel)`
-3. Make these **5 edits** in `index.html`. Line numbers are from `main` @ `07a872f`, so search for the text rather than trusting the numbers.
+3. Make these **5 edits** in `index.html`. Line numbers are from `main` @ `00589e0` (after the research assistant was merged), so search for the text rather than trusting the numbers.
 
-   **a) Paste the panel.** Put the whole content of `web/SiteAgentPanel.jsx` inside the `<script type="text/babel">` block at module scope, right before `const FLEET_LINK_KEY = "logistix-fleet-url";` (~line 486, after the icon set).
+   **a) Paste the panel.** Put the whole content of `web/SiteAgentPanel.jsx` inside the `<script type="text/babel">` block at module scope, right before `const FLEET_LINK_KEY = "logistix-fleet-url";` (~line 487, after the icon set).
    - It uses `React.useState` etc., because `index.html` already destructures the hooks at the top.
-   - All its names are prefixed `SiteAgent*` / `SA*` / `sa*`. I verified that it compiles together with the current `index.html` under the page's `@babel/standalone@7.23.10`, with no name clashes.
+   - All its names are prefixed `SiteAgent*` / `SA*` / `sa*`. I verified that it compiles together with `index.html` @ `00589e0` under the page's `@babel/standalone@7.23.10`, with no name clashes.
+   - It's separate from the floating ✦ Research assistant (`research-agent.js`): leave that as it is.
 
-   **b) Nav item.** In `NAV_ITEMS` (~line 488), add before the `settings` entry:
+   **b) Nav item.** In `NAV_ITEMS` (~line 489), add before the `settings` entry:
    ```js
    { key: "site_agent", label: "Site Agent", icon: SiteAgentIcon },
    ```
 
-   **c) Title.** In `VIEW_TITLES` (~line 624), add:
+   **c) Title.** In `VIEW_TITLES` (~line 625), add:
    ```js
    site_agent: "Site Agent",
    ```
 
-   **d) Admin only.** In the sidebar nav filter (~line 3790), change
+   **d) Admin only.** In the sidebar nav filter (~line 3791), change
    ```js
    if (item.key === "users" || item.key === "activity_log" || item.key === "order_history") return session.role === "admin";
    ```
@@ -131,9 +140,9 @@ It does **not** touch the three existing jobs. Once the owner says yes, apply it
    ```js
    if (item.key === "users" || item.key === "activity_log" || item.key === "order_history" || item.key === "site_agent") return session.role === "admin";
    ```
-   As of `07a872f` this is the only place the nav is filtered.
+   As of `00589e0` this is the only place the nav is filtered.
 
-   **e) Route.** Next to the other admin-only views (~line 11332, after the `users` line), add:
+   **e) Route.** Next to the other admin-only views (~line 11352, after the `users` line), add:
    ```jsx
    {view === "site_agent" && viewSession.role === "admin" && (
      <SiteAgentPanel client={supabaseClient} supabaseUrl={SUPABASE_URL} anonKey={SUPABASE_ANON_KEY} />
@@ -176,13 +185,17 @@ What the agent does with it:
 
 ## 10. Smoke test
 
-1. Log in as an admin, open **Site Agent**, and press **Run full check**. Within a few minutes the conversation shows the agent's steps and the morning report.
+1. Log in as an admin, open **Site Agent**, and press **Run full check**. Within a minute:
+   - The morning report appears in the panel and on Telegram.
+   - No AI is used unless a check finds a new problem.
+   - The header shows "AI this month $0.00 / $5.00".
 2. Expected first findings, based on the data at setup:
-   - ~1,524 containers still at stage "Confirmed" months after their loading date. Probably imported history; the agent will ask before touching them.
-   - 1 overdue invoice.
+   - FYI: ~1,524 containers still at "Confirmed" months after their loading date. This is info only, with no AI call.
+   - Needs attention: 1 overdue invoice. It's new, so it gets one Haiku explanation (about half a US cent).
    - No late orders.
-3. Ask *"which containers are running late?"* in the chat.
-4. Tell it to fix something small and check that an approval request appears. The default mode `AGENT_AUTONOMY=readonly` makes every change wait for approval. Approve it and watch the agent confirm.
+3. Press **Run full check** again. The same problems now show "(open since …)" with no new AI call. Check with `select count(*) from agent_ai_calls;`.
+4. Ask *"which containers are running late?"* in the chat. The chat model answers, and the cost appears in `agent_ai_calls` and the panel header.
+5. Tell it to fix something small and check that an approval request appears. The default `AGENT_AUTONOMY=readonly` makes every change wait for approval. Approve it and check that the result shows directly, with no extra AI call.
 
 ## 11. Troubleshooting
 
@@ -190,7 +203,9 @@ What the agent does with it:
 |---|---|
 | Run fails with a 400 mentioning `fallbacks` or `context_management` | Set `AGENT_ENABLE_FALLBACKS=false` or `AGENT_ENABLE_COMPACTION=false`. |
 | Runs pause for about a minute between steps | Normal on the free plan: each worker gets 150s, and the sweeper continues the run. On Pro, set `AGENT_WALL_CLOCK_MS=400000`. |
-| Morning report never arrives | Check the Vault secrets, then `select * from cron.job_run_details where jobid in (select jobid from cron.job where jobname like 'site-agent-%') order by start_time desc limit 20;`, then the function logs. |
+| "This month's AI budget ... is used up" | Raise `AI_MONTHLY_BUDGET_USD`. Checks, reports and alerts keep working without AI in the meantime. |
+| Want zero automatic AI calls | Set `AI_EXPLAIN_PROBLEMS=false`. Reports and alerts still arrive, just without the explanation. |
+| Morning report never arrives | Check `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_IDS`, the Vault secrets, then `select * from cron.job_run_details where jobid in (select jobid from cron.job where jobname like 'site-agent-%') order by start_time desc limit 20;`, then the function logs. |
 | Panel says "Only admins can use Site Agent" | The user needs `profiles.role = 'admin'`, or a row in `public.agent_admins`. |
 | No messages on phone | At least one notification channel must be configured (see `.env.example`). Alerts below `NOTIFY_MIN_SEVERITY` stay in the dashboard only. |
 

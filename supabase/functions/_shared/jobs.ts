@@ -1,84 +1,135 @@
-// Scheduled jobs: the 15-minute monitor and the 8am morning check.
-import { config } from "./config.ts";
-import { type CheckResult, runChecks, saveChecks } from "./checks.ts";
+// Scheduled jobs: the 15-minute monitor and the 08:00 morning check.
+// Both are rule-based (SQL + HTTP checks, no AI). Claude Haiku is called only
+// when a check finds a NEW problem, once, to explain it and suggest a fix.
+import { type CheckResult, formatChecks, runChecks, saveChecks } from "./checks.ts";
 import { resolveAlertByKey, upsertAlert } from "./alerts.ts";
 import { notifyOwners } from "./notify.ts";
-import { dailyKickoff, monitorKickoff, todayText } from "./prompt.ts";
-import { ActiveRunError, createConversation, createRun, insertMessage, kickWorker } from "./runs.ts";
+import { todayText } from "./prompt.ts";
+import { createConversation, insertMessage } from "./runs.ts";
 import { db, toJson } from "./db.ts";
+import { explainProblems } from "./explain.ts";
+import { formatMorningReport, ordersSnapshot, prettyAi, type ReportProblem } from "./report.ts";
+import { listPendingApprovals } from "./approvals.ts";
 
 const alertKey = (r: CheckResult) => (r.name.startsWith("rule:") ? r.name : `check:${r.name}`);
+const label = (r: CheckResult) => r.name.replace(/^rule:/, "").replace(/_/g, " ");
 
 /**
- * Quick checks every 15 minutes, no AI involved. New failures become alerts
- * (the team is notified) and, if AGENT_AUTO_INVESTIGATE is on, the agent is
- * asked to investigate and fix. Checks that pass again auto-resolve their alert.
+ * Creates/refreshes an alert for every problem (fail, and warn if included) and
+ * resolves alerts whose checks pass again. Never notifies by itself - the caller
+ * sends one combined message.
  */
-export async function runMonitor(): Promise<{ results: CheckResult[]; investigationConversationId?: string }> {
-  const results = await runChecks("quick");
-  await saveChecks("monitor", results);
-
-  const newFailures: CheckResult[] = [];
+async function syncAlerts(
+  results: CheckResult[],
+  source: "monitor" | "daily_check",
+  statuses: CheckResult["status"][],
+): Promise<{ problems: ReportProblem[]; recovered: string[] }> {
+  const problems: ReportProblem[] = [];
+  const recovered: string[] = [];
   for (const r of results) {
-    if (r.status === "skipped") continue;
-    if (r.status === "fail") {
+    if (statuses.includes(r.status)) {
       const res = await upsertAlert({
-        severity: "critical",
-        category: r.category ?? "site",
-        title: r.summary.slice(0, 160),
-        body: `Check "${r.name}" failed.\n${r.summary}${r.details ? `\n\nDetails: ${toJson(r.details).slice(0, 1500)}` : ""}`,
+        severity: r.status === "fail" ? "critical" : "warning",
+        category: r.category ?? (r.name.startsWith("rule:") ? "business" : "site"),
+        title: `${label(r)}: ${r.summary}`.slice(0, 200),
+        body: `${r.summary}${r.details ? `\n\nDetails: ${toJson(r.details).slice(0, 1500)}` : ""}`,
         dedupeKey: alertKey(r),
-        source: "monitor",
+        source,
+        notify: false,
       });
-      if (res.created) newFailures.push(r);
+      const [row] = await db()<{ first_seen_at: string; ai_note: string | null }[]>`
+        select first_seen_at, ai_note from public.agent_alerts where id = ${res.id}`;
+      problems.push({
+        check: r,
+        alertId: res.id,
+        isNew: res.created || res.escalated,
+        firstSeen: row.first_seen_at,
+        aiNote: row.ai_note,
+      });
     } else if (r.status === "ok") {
-      const title = await resolveAlertByKey(alertKey(r), "Check passing again (auto-resolved by the monitor).");
-      if (title) {
-        await notifyOwners({
-          kind: "recovery",
-          severity: "info",
-          force: true,
-          title: "Recovered",
-          body: `${title}\n\nNow: ${r.summary}`,
-        });
-      }
+      const title = await resolveAlertByKey(
+        alertKey(r),
+        `Check passing again (auto-resolved by the ${source === "monitor" ? "monitor" : "morning check"}).`,
+      );
+      if (title) recovered.push(title);
     }
   }
-
-  if (!newFailures.length || !config.autoInvestigate) return { results };
-
-  // Don't start a second investigation while one is still going.
-  const [busy] = await db()`
-    select 1 from public.agent_runs where kind = 'monitor_investigate' and status in ('queued', 'running') limit 1`;
-  if (busy) return { results };
-
-  const conversationId = await createConversation({
-    title: `Investigation: ${newFailures.map((f) => f.name).join(", ")}`.slice(0, 120),
-    source: "system",
-  });
-  await insertMessage(conversationId, null, "user", [{ type: "text", text: await monitorKickoff(newFailures) }], null);
-  const runId = await createRun(conversationId, "monitor_investigate");
-  await kickWorker(runId);
-  return { results, investigationConversationId: conversationId };
+  return { problems, recovered };
 }
 
-/** Full checks, then the agent reviews everything and writes the morning report. */
-export async function startDailyCheck(createdBy?: string | null): Promise<{ conversationId: string; runId: string }> {
+/** Explains the NEW problems with one Haiku call (if any) and stores each note on its alert. */
+async function explainNew(problems: ReportProblem[], source: string) {
+  const fresh = problems.filter((p) => p.isNew);
+  const exp = await explainProblems(fresh.map((p) => p.check), source);
+  if (exp.text) {
+    for (const p of fresh) {
+      const note = exp.perCheck[p.check.name] ?? exp.text;
+      p.aiNote = note;
+      await db()`update public.agent_alerts set ai_note = ${note}, ai_noted_at = now() where id = ${p.alertId}`;
+    }
+  }
+  return exp;
+}
+
+/** Every 15 minutes: quick checks. Alerts only on NEW failures; "Recovered" when they pass again. */
+export async function runMonitor(): Promise<{ results: CheckResult[]; newProblems: number }> {
+  const results = await runChecks("quick");
+  await saveChecks("monitor", results);
+  const { problems, recovered } = await syncAlerts(results, "monitor", ["fail"]);
+
+  if (recovered.length) {
+    await notifyOwners({
+      kind: "recovery",
+      severity: "info",
+      force: true,
+      title: "Recovered",
+      body: recovered.map((t) => `• ${t}`).join("\n"),
+    });
+  }
+
+  const fresh = problems.filter((p) => p.isNew);
+  if (fresh.length) {
+    const exp = await explainNew(fresh, "15-minute monitor");
+    const lines = fresh.map((p) => `• ${label(p.check)}: ${p.check.summary}`).join("\n");
+    await notifyOwners({
+      kind: "alert",
+      severity: "critical",
+      title: `${fresh.length} new problem${fresh.length > 1 ? "s" : ""} detected`,
+      body: `${lines}${exp.text ? `\n\n🤖 Likely cause & fix:\n${prettyAi(exp.text)}` : ""}`,
+    });
+  }
+  return { results, newProblems: fresh.length };
+}
+
+/**
+ * 08:00: full checks -> alerts -> (Haiku only for new problems) -> report sent to
+ * Telegram/email/... The report is also saved as a conversation, so the owner can
+ * ask follow-up questions about it in the dashboard.
+ */
+export async function runDailyCheck(createdBy?: string | null): Promise<{ conversationId: string; report: string }> {
   const results = await runChecks("full");
   await saveChecks("daily", results);
+  const { problems } = await syncAlerts(results, "daily_check", ["fail", "warn"]);
+  const exp = await explainNew(problems, "morning check");
 
-  const conversationId = await createConversation({
-    title: `Morning check - ${await todayText()}`,
-    source: "system",
-    createdBy,
+  const date = await todayText();
+  const report = formatMorningReport({
+    date,
+    results,
+    problems,
+    aiText: exp.text,
+    aiSkipped: exp.skippedReason,
+    snapshot: await ordersSnapshot(),
+    pendingApprovals: await listPendingApprovals(),
   });
-  await insertMessage(conversationId, null, "user", [{ type: "text", text: await dailyKickoff(results) }], null);
-  try {
-    const runId = await createRun(conversationId, "daily_check", createdBy);
-    await kickWorker(runId);
-    return { conversationId, runId };
-  } catch (e) {
-    if (e instanceof ActiveRunError) throw new Error("A morning check is already running.");
-    throw e;
-  }
+
+  await notifyOwners({ kind: "report", severity: "info", force: true, title: `Morning report - ${date}`, body: report });
+
+  const conversationId = await createConversation({ title: `Morning report - ${date}`, source: "system", createdBy });
+  await insertMessage(conversationId, null, "user", [{
+    type: "text",
+    text: `[Automatic morning check - ${date}]\nFull check results:\n${formatChecks(results)}`,
+  }]);
+  await insertMessage(conversationId, null, "assistant", [{ type: "text", text: report }]);
+  return { conversationId, report };
 }

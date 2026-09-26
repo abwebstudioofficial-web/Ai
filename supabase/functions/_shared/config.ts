@@ -37,8 +37,17 @@ const supabaseUrl = env("SUPABASE_URL").replace(/\/+$/, "");
 export const config = {
   // --- Claude -----------------------------------------------------------------
   anthropicApiKey: env("ANTHROPIC_API_KEY"),
+  // Model for questions you ask directly (dashboard chat / Telegram).
   model: env("AGENT_MODEL", "claude-opus-5"),
-  effort: oneOf<Effort>(env("AGENT_EFFORT"), ["low", "medium", "high", "xhigh", "max"], "high"),
+  // medium keeps chat answers cheaper; raise to high for harder investigations.
+  effort: oneOf<Effort>(env("AGENT_EFFORT"), ["low", "medium", "high", "xhigh", "max"], "medium"),
+  // Model for the only automatic AI use: explaining NEW problems found by the checks.
+  autoModel: env("AI_AUTO_MODEL", "claude-haiku-4-5"),
+  // Explain new problems with AI (false = checks and alerts only, never any AI call).
+  explainProblems: envBool("AI_EXPLAIN_PROBLEMS", true),
+  // Hard monthly cap on estimated Claude spend in US$ (0 = no cap). When reached, all AI
+  // calls stop until next month; checks, reports and alerts keep working.
+  monthlyBudgetUsd: Number.parseFloat(env("AI_MONTHLY_BUDGET_USD", "5")) || 0,
   maxTokens: envInt("AGENT_MAX_TOKENS", 16000),
   enableFallbacks: envBool("AGENT_ENABLE_FALLBACKS", true),
   enableCompaction: envBool("AGENT_ENABLE_COMPACTION", true),
@@ -54,8 +63,7 @@ export const config = {
   // Pull requests are never merged by the agent - you merge them on GitHub.
   autonomy: oneOf<Autonomy>(env("AGENT_AUTONOMY"), ["readonly", "standard", "full"], "readonly"),
   maxAutoRows: envInt("AGENT_MAX_AUTO_ROWS", 25),
-  maxTurnsPerRun: envInt("AGENT_MAX_TURNS_PER_RUN", 60),
-  autoInvestigate: envBool("AGENT_AUTO_INVESTIGATE", true),
+  maxTurnsPerRun: envInt("AGENT_MAX_TURNS_PER_RUN", 30),
 
   // --- Edge Function runtime limits ---------------------------------------------
   // Free plan: 150s wall clock. Paid plans: 400s (set AGENT_WALL_CLOCK_MS=400000).

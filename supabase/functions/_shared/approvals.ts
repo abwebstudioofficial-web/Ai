@@ -1,7 +1,9 @@
 // Executing / rejecting approval requests (from the dashboard or Telegram).
+// No AI call happens here: the result is shown to the owner directly and noted in
+// the conversation, so the agent sees it the next time the owner writes.
 import { clip, db } from "./db.ts";
 import { executeTool } from "./tools/index.ts";
-import { ActiveRunError, createRun, hasActiveRun, insertMessage, kickWorker } from "./runs.ts";
+import { ActiveRunError, hasActiveRun, insertMessage } from "./runs.ts";
 
 export class ApprovalError extends Error {}
 
@@ -19,7 +21,6 @@ export interface DecisionResult {
   id: number;
   status: "executed" | "failed" | "rejected";
   result?: string;
-  followupRunId?: string;
 }
 
 export async function decideApproval(
@@ -58,26 +59,17 @@ export async function decideApproval(
     await sql`update public.agent_approvals set status = ${status}, result = ${clip(result, 8000)} where id = ${id}`;
   }
 
-  // Tell the agent what happened, in the conversation where it asked.
-  let followupRunId: string | undefined;
+  // Note the outcome in the conversation where the agent asked (no AI call).
   if (pending.conversation_id) {
     const who = `the owner (via ${by.via})${note ? ` - note: "${note}"` : ""}`;
     const text = decision === "approve"
-      ? `[Approval #${id} for ${pending.tool_name} was APPROVED by ${who} and has been ${
-        status === "executed" ? "executed" : "attempted but FAILED"
-      }.]\n` +
-        `Result:\n${clip(result ?? "", 6000)}\n\nVerify the outcome, update related alerts, and reply with a short confirmation.`
-      : `[Approval #${id} for ${pending.tool_name} was REJECTED by ${who}.] Don't retry this action unless asked. ` +
-        `Acknowledge in one or two lines, and suggest an alternative if there is one.`;
+      ? `[Approval #${id} for ${pending.tool_name} was APPROVED by ${who} and ${
+        status === "executed" ? "has been executed" : "was attempted but FAILED"
+      }.]\nResult:\n${clip(result ?? "", 6000)}`
+      : `[Approval #${id} for ${pending.tool_name} was REJECTED by ${who}. Don't retry it unless asked.]`;
     await insertMessage(pending.conversation_id, null, "user", [{ type: "text", text }], null);
-    try {
-      followupRunId = await createRun(pending.conversation_id, "approval_followup", by.userId ?? null);
-      await kickWorker(followupRunId);
-    } catch (e) {
-      if (!(e instanceof ActiveRunError)) throw e;
-    }
   }
-  return { id, status, result, followupRunId };
+  return { id, status, result };
 }
 
 export async function listPendingApprovals(limit = 10) {

@@ -1,9 +1,10 @@
 // Entry point for scheduled jobs (pg_cron -> public.agent_invoke()).
-//   {"job":"daily"}   -> full checks + AI morning review + report (08:00 PKT)
-//   {"job":"monitor"} -> quick checks every 15 minutes (AI only when something new breaks)
+//   {"job":"daily"}   -> rule-based full checks + morning report to Telegram (08:00 PKT)
+//   {"job":"monitor"} -> rule-based quick checks every 15 minutes
+// No AI is used unless a check finds a NEW problem (then one small Claude Haiku call).
 // Requires the x-agent-secret header. Deploy with --no-verify-jwt.
 import { background, hasInternalSecret, json } from "../_shared/http.ts";
-import { runMonitor, startDailyCheck } from "../_shared/jobs.ts";
+import { runDailyCheck, runMonitor } from "../_shared/jobs.ts";
 import { notifyOwners } from "../_shared/notify.ts";
 import { errorMessage } from "../_shared/db.ts";
 
@@ -15,7 +16,7 @@ Deno.serve(async (req) => {
 
   const work = async () => {
     try {
-      if (job === "daily") await startDailyCheck();
+      if (job === "daily") await runDailyCheck();
       else if (job === "monitor") await runMonitor();
     } catch (e) {
       console.error(`job ${job} failed`, e);

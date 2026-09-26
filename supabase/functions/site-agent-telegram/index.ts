@@ -3,7 +3,7 @@
 // TELEGRAM_WEBHOOK_SECRET and TELEGRAM_CHAT_IDS, deploy with --no-verify-jwt,
 // then register the webhook with the secret token.
 //
-// Commands: /help  /new  /stop  /check  /alerts  /approvals  /approve <id> [note]  /reject <id> [note]
+// Commands: /help  /new  /stop  /check  /cost  /alerts  /approvals  /approve <id> [note]  /reject <id> [note]
 // Anything else is a message to the agent.
 import { config } from "../_shared/config.ts";
 import { db, errorMessage, toJson } from "../_shared/db.ts";
@@ -11,11 +11,13 @@ import { sendTelegram } from "../_shared/notify.ts";
 import { contextBlock } from "../_shared/prompt.ts";
 import { ActiveRunError, cancelRun, createConversation, createRun, insertMessage, kickWorker } from "../_shared/runs.ts";
 import { ApprovalError, decideApproval, listPendingApprovals } from "../_shared/approvals.ts";
-import { startDailyCheck } from "../_shared/jobs.ts";
+import { runDailyCheck } from "../_shared/jobs.ts";
+import { monthToDateUsd } from "../_shared/ai_cost.ts";
 import { background, timingSafeEqual } from "../_shared/http.ts";
 
 const HELP = `Site Agent commands:
-/check - run the full morning check now
+/check - run the full morning check now (rule-based, free)
+/cost - AI spend this month
 /alerts - open alerts
 /approvals - requests waiting for you
 /approve <id> [note] - approve a request
@@ -56,9 +58,15 @@ async function handle(chatId: string, text: string, from: string) {
       }
 
       case "/check": {
-        await reply("Running the full check now - the report will arrive in a few minutes.");
-        await startDailyCheck();
+        await reply("Running the full check now - the report arrives in a minute or two.");
+        await runDailyCheck(); // sends the report to every configured channel
         return;
+      }
+
+      case "/cost": {
+        const spent = await monthToDateUsd();
+        const cap = config.monthlyBudgetUsd > 0 ? ` of your US$${config.monthlyBudgetUsd.toFixed(2)} monthly cap` : "";
+        return await reply(`AI spend this month: about US$${spent.toFixed(2)}${cap}.`);
       }
 
       case "/alerts": {

@@ -364,6 +364,14 @@ function SiteAgentPanel({ client, supabaseUrl, anonKey }) {
               {summary.autonomy === "readonly" ? "approve every change" : summary.autonomy}
             </span>
           )}
+          {typeof summary.ai_spend_month_usd === "number" && (
+            <span
+              className="text-[10px] font-normal text-slate-500 border border-slate-800 rounded px-1.5 py-0.5"
+              title="Estimated Claude API spend this month (checks and reports are free; AI is only used for your questions and to explain new problems)"
+            >
+              AI this month ${summary.ai_spend_month_usd.toFixed(2)}{summary.ai_budget_usd > 0 ? " / $" + summary.ai_budget_usd.toFixed(2) : ""}
+            </span>
+          )}
         </div>
         <div className="flex gap-1 flex-1 flex-wrap">
           <button className={tabCls(tab === "chat")} onClick={() => setTab("chat")}>Chat</button>
@@ -377,7 +385,9 @@ function SiteAgentPanel({ client, supabaseUrl, anonKey }) {
           </button>
           <button className={tabCls(tab === "health")} onClick={() => setTab("health")}>Health</button>
         </div>
-        <button className={btn} disabled={busy} onClick={runFullCheck} title="Run the full morning check now">Run full check</button>
+        <button className={btn} disabled={busy} onClick={runFullCheck} title="Run the full morning check now (rule-based, no AI cost unless a new problem is found)">
+          {busy ? "Working…" : "Run full check"}
+        </button>
       </div>
 
       {error && (
@@ -410,6 +420,7 @@ function SiteAgentPanel({ client, supabaseUrl, anonKey }) {
                 <div className="text-center text-slate-500 py-10 text-sm space-y-2">
                   <div className="text-slate-300 font-medium">Ask anything about the site and your data.</div>
                   <div>“Which containers are running late?” · “Check the website for broken pages” · “Why did the fuel price stop updating?” · “Summarise today's orders”</div>
+                  <div className="text-xs">Each question costs a few cents of AI time. Morning reports and alerts are free.</div>
                 </div>
               )}
               <SAMessageList messages={conv.messages} />

@@ -1,14 +1,14 @@
-// The agent loop. A "run" is processed in chunks: each worker invocation does as
-// many Claude turns as fit in its time budget, saving every message to the
-// database, then hands the run back to the queue if there is more to do.
+// The chat agent loop - runs ONLY when someone asks a question (dashboard or
+// Telegram). A run is processed in chunks: each worker invocation does as many
+// Claude turns as fit in its time budget, saving every message to the database,
+// then hands the run back to the queue if there is more to do.
 import { Anthropic } from "./deps.ts";
 import { config } from "./config.ts";
 import { db, errorMessage } from "./db.ts";
 import { apiTools, executeTool } from "./tools/index.ts";
-import { buildSystem, todayText } from "./prompt.ts";
-import { notifyOwners, sendTelegram } from "./notify.ts";
-import { formatChecks } from "./checks.ts";
-import type { CheckResult } from "./checks.ts";
+import { buildSystem } from "./prompt.ts";
+import { sendTelegram } from "./notify.ts";
+import { budgetBlock, recordAiCall } from "./ai_cost.ts";
 import {
   claimRun,
   finishRun,
@@ -97,48 +97,19 @@ async function repairDanglingToolUse(conversationId: string, runId: string) {
   );
 }
 
-async function onRunFinished(run: RunRow, text: string) {
-  const conversation = await getConversation(run.conversation_id);
-  const body = text || "(no text in the final answer - see the dashboard)";
+async function replyOnTelegram(run: RunRow, text: string) {
   try {
-    if (run.kind === "daily_check") {
-      await notifyOwners({ kind: "report", severity: "info", force: true, title: `Morning report - ${await todayText()}`, body });
-    } else if (run.kind === "monitor_investigate") {
-      await notifyOwners({ kind: "report", severity: "warning", force: true, title: "Site Agent investigation", body });
-    }
-    if (conversation?.source === "telegram" && conversation.external_id && run.kind !== "daily_check") {
-      await sendTelegram(conversation.external_id, body);
+    const conversation = await getConversation(run.conversation_id);
+    if (conversation?.source === "telegram" && conversation.external_id) {
+      await sendTelegram(conversation.external_id, text || "(no text in the answer - see the dashboard)");
     }
   } catch (e) {
-    console.error("onRunFinished notification failed", e);
+    console.error("Telegram reply failed", e);
   }
 }
 
-async function onRunFailed(run: RunRow, error: string) {
-  let extra = "";
-  if (run.kind === "daily_check") {
-    // Still give the team the raw check results so the morning isn't silent.
-    const rows = await db()<CheckResult[]>`
-      select check_name as name, status, summary from public.agent_health_checks
-      where batch_id = (select batch_id from public.agent_health_checks where job = 'daily' order by created_at desc limit 1)`;
-    if (rows.length) extra = `\n\nRaw check results:\n${formatChecks(rows, false)}`;
-  }
-  try {
-    await notifyOwners({
-      kind: "system",
-      severity: "warning",
-      force: run.kind === "daily_check",
-      title: `Site Agent run failed (${run.kind})`,
-      body: `${error}${extra}`,
-    });
-    const conversation = await getConversation(run.conversation_id);
-    if (conversation?.source === "telegram" && conversation.external_id) {
-      await sendTelegram(conversation.external_id, `Sorry - I hit an error: ${error}`);
-    }
-  } catch (e) {
-    console.error("onRunFailed notification failed", e);
-  }
-}
+const onRunFinished = (run: RunRow, text: string) => replyOnTelegram(run, text);
+const onRunFailed = (run: RunRow, error: string) => replyOnTelegram(run, `Sorry - I hit an error: ${error}`);
 
 function isRetryable(e: unknown): boolean {
   if (e instanceof Anthropic.APIConnectionError) return true; // includes timeouts
@@ -192,8 +163,17 @@ export async function processRun(runId: string, deadline: number): Promise<"done
         }]);
       }
 
+      const blocked = await budgetBlock();
+      if (blocked) {
+        await insertMessage(run.conversation_id, run.id, "assistant", [{ type: "text", text: blocked }]);
+        await finishRun(run.id, "done", blocked);
+        await onRunFinished(run, blocked);
+        return "done";
+      }
+
       const response = await callClaude(client, await loadHistory(run.conversation_id), system, tools, deadline, finalAnswerOnly);
       turns = await recordTurn(run.id, response.usage as unknown as Record<string, unknown>);
+      await recordAiCall(response.model || config.model, "chat", response.usage, run.id);
 
       switch (response.stop_reason) {
         case "tool_use": {
