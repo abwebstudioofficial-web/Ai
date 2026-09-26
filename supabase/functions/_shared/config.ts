@@ -37,8 +37,8 @@ const supabaseUrl = env("SUPABASE_URL").replace(/\/+$/, "");
 export const config = {
   // --- Claude -----------------------------------------------------------------
   anthropicApiKey: env("ANTHROPIC_API_KEY"),
-  // Model for questions you ask directly (dashboard chat / Telegram).
-  model: env("AGENT_MODEL", "claude-opus-5"),
+  // Model for questions asked directly (Telegram). Not used by the scheduled checks.
+  model: env("AGENT_MODEL", "claude-sonnet-5"),
   // medium keeps chat answers cheaper; raise to high for harder investigations.
   effort: oneOf<Effort>(env("AGENT_EFFORT"), ["low", "medium", "high", "xhigh", "max"], "medium"),
   // Model for the only automatic AI use: explaining NEW problems found by the checks.

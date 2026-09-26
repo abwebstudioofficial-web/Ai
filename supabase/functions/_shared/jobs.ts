@@ -1,11 +1,10 @@
 // Scheduled jobs: the 15-minute monitor and the 08:00 morning check.
 // Both are rule-based (SQL + HTTP checks, no AI). Claude Haiku is called only
 // when a check finds a NEW problem, once, to explain it and suggest a fix.
-import { type CheckResult, formatChecks, runChecks, saveChecks } from "./checks.ts";
+import { type CheckResult, runChecks, saveChecks } from "./checks.ts";
 import { resolveAlertByKey, upsertAlert } from "./alerts.ts";
 import { notifyOwners } from "./notify.ts";
 import { todayText } from "./prompt.ts";
-import { createConversation, insertMessage } from "./runs.ts";
 import { db, toJson } from "./db.ts";
 import { explainProblems } from "./explain.ts";
 import { formatMorningReport, ordersSnapshot, prettyAi, type ReportProblem } from "./report.ts";
@@ -103,10 +102,9 @@ export async function runMonitor(): Promise<{ results: CheckResult[]; newProblem
 
 /**
  * 08:00: full checks -> alerts -> (Haiku only for new problems) -> report sent to
- * Telegram/email/... The report is also saved as a conversation, so the owner can
- * ask follow-up questions about it in the dashboard.
+ * Telegram/email/... and saved, so it also appears in the message thread on the site.
  */
-export async function runDailyCheck(createdBy?: string | null): Promise<{ conversationId: string; report: string }> {
+export async function runDailyCheck(): Promise<{ report: string }> {
   const results = await runChecks("full");
   await saveChecks("daily", results);
   const { problems } = await syncAlerts(results, "daily_check", ["fail", "warn"]);
@@ -124,12 +122,5 @@ export async function runDailyCheck(createdBy?: string | null): Promise<{ conver
   });
 
   await notifyOwners({ kind: "report", severity: "info", force: true, title: `Morning report - ${date}`, body: report });
-
-  const conversationId = await createConversation({ title: `Morning report - ${date}`, source: "system", createdBy });
-  await insertMessage(conversationId, null, "user", [{
-    type: "text",
-    text: `[Automatic morning check - ${date}]\nFull check results:\n${formatChecks(results)}`,
-  }]);
-  await insertMessage(conversationId, null, "assistant", [{ type: "text", text: report }]);
-  return { conversationId, report };
+  return { report };
 }

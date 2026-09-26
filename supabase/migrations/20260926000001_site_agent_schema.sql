@@ -198,6 +198,20 @@ create table if not exists public.agent_audit_log (
 );
 create index if not exists agent_audit_log_created_idx on public.agent_audit_log (created_at desc);
 
+-- Every message Site Agent sends (morning reports, new-problem alerts, recoveries,
+-- approval requests). The admin panel shows these as a chat thread on the site;
+-- the same text also goes to Telegram / email / ...
+create table if not exists public.agent_notifications (
+  id          bigint generated always as identity primary key,
+  kind        text not null check (kind in ('alert', 'report', 'approval', 'recovery', 'system')),
+  severity    text not null check (severity in ('info', 'warning', 'critical')),
+  title       text not null,
+  body        text not null,
+  delivered   text[] not null default '{}',   -- per-channel results, e.g. {"telegram: sent"}
+  created_at  timestamptz not null default now()
+);
+create index if not exists agent_notifications_created_idx on public.agent_notifications (created_at desc);
+
 -- Every Claude call, with its estimated cost (for the monthly budget cap).
 create table if not exists public.agent_ai_calls (
   id                  bigint generated always as identity primary key,
@@ -268,7 +282,7 @@ begin
   foreach t in array array[
     'agent_settings', 'agent_admins', 'agent_conversations', 'agent_messages', 'agent_runs',
     'agent_alerts', 'agent_approvals', 'agent_audit_log', 'agent_memory',
-    'agent_watch_rules', 'agent_health_checks', 'agent_ai_calls'
+    'agent_watch_rules', 'agent_health_checks', 'agent_ai_calls', 'agent_notifications'
   ] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists "agent admins can read" on public.%I', t);
@@ -289,7 +303,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['agent_messages', 'agent_runs', 'agent_alerts', 'agent_approvals', 'agent_conversations'] loop
+  foreach t in array array['agent_messages', 'agent_runs', 'agent_alerts', 'agent_approvals', 'agent_conversations', 'agent_notifications'] loop
     begin
       execute format('alter publication supabase_realtime add table public.%I', t);
     exception

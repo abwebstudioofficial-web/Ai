@@ -29,12 +29,12 @@
 |---|---|
 | `supabase/migrations/20260926000001_site_agent_schema.sql` | New `agent_*` tables (including the `agent_ai_calls` cost ledger), RLS (admins read-only from the browser), helper functions, the `agent_container_view` view, starter watch rules and memory notes. **Does not alter any existing table.** Safe to re-run. |
 | `supabase/migrations/20260926000002_site_agent_cron.sql` | 4 **new** pg_cron jobs: the 08:00 PKT rule-based morning report, a 15-minute monitor, a 1-minute sweeper and daily housekeeping. **Ask the owner before applying (rule 5).** |
-| `supabase/functions/site-agent-chat` | The dashboard's API (admin-only, verifies the user's session). |
-| `supabase/functions/site-agent-worker` | Answers the owner's questions with the chat model, in the background (chunked, so it never hits the Edge Function time limit). |
+| `supabase/functions/site-agent-api` | The site panel's API: the message thread, alerts, health and approvals. Admin-only, verifies the user's session. Never calls Claude, except "Run check now" when it finds a new problem (one Haiku call). |
+| `supabase/functions/site-agent-worker` | Only used if someone sends the Telegram bot a question: answers with Claude Sonnet 5 in the background (chunked, so it never hits the Edge Function time limit). |
 | `supabase/functions/site-agent-cron` | Entry point for the scheduled jobs. Rule-based: no AI unless a check finds a NEW problem, then one Claude Haiku call. |
-| `supabase/functions/site-agent-telegram` | Optional: chat with the agent and approve its requests from Telegram. |
-| `supabase/functions/_shared/` | Checks and report (`checks.ts`, `report.ts`, `jobs.ts`), the Haiku explanation (`explain.ts`), the budget cap (`ai_cost.ts`), chat agent loop, tools, SQL safety guard, notifications. |
-| `web/SiteAgentPanel.jsx` | The admin panel, written to paste straight into `index.html`. |
+| `supabase/functions/site-agent-telegram` | Optional: Telegram commands (/check, /alerts, /cost, /approve...) and optional questions. |
+| `supabase/functions/_shared/` | Checks and report (`checks.ts`, `report.ts`, `jobs.ts`), the Haiku explanation (`explain.ts`), the budget cap (`ai_cost.ts`), notifications (saved to `agent_notifications` for the site and sent to Telegram), the question agent, tools, SQL safety guard. |
+| `web/SiteAgentPanel.jsx` | The site page: every Site Agent message as a Claude-style chat thread (streams in like Claude), plus Alerts / Health / Approvals tabs. No question box. Written to paste straight into `index.html`. |
 | `.env.example` | Every secret/setting, with explanations. |
 
 ## 2. Apply the schema migration
@@ -68,7 +68,7 @@ Leave the cost settings at their defaults unless the owner says otherwise:
 
 - `AI_AUTO_MODEL=claude-haiku-4-5`
 - `AI_MONTHLY_BUDGET_USD=5`
-- `AGENT_MODEL=claude-opus-5` with `AGENT_EFFORT=medium`
+- `AGENT_MODEL=claude-sonnet-5` with `AGENT_EFFORT=medium` (only used if someone asks the Telegram bot a question)
 
 Then run:
 
@@ -79,13 +79,13 @@ supabase secrets set --project-ref zonuxfqvyxhfkimdahkb --env-file ./site-agent.
 ## 4. Deploy the functions
 
 ```bash
-supabase functions deploy site-agent-chat     --project-ref zonuxfqvyxhfkimdahkb
+supabase functions deploy site-agent-api      --project-ref zonuxfqvyxhfkimdahkb
 supabase functions deploy site-agent-worker   --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
 supabase functions deploy site-agent-cron     --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
 supabase functions deploy site-agent-telegram --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt   # optional
 ```
 
-Why `--no-verify-jwt` is safe for these: worker and cron check the `x-agent-secret` header themselves, and telegram checks Telegram's secret token. `site-agent-chat` keeps JWT verification and also checks that the user is an admin.
+Why `--no-verify-jwt` is safe for these: worker and cron check the `x-agent-secret` header themselves, and telegram checks Telegram's secret token. `site-agent-api` keeps JWT verification and also checks that the user is an admin.
 
 If the project has a `supabase/config.toml`, the equivalent is `[functions.site-agent-worker] verify_jwt = false`, and the same for cron and telegram.
 
@@ -106,7 +106,7 @@ The owner must do this, or explicitly approve it. It's configuration, not a sche
 |---|---|---|
 | `site-agent-daily` | `0 3 * * *` = **08:00 PKT** | Rule-based full checks and the morning report to Telegram. **No AI** unless a check finds a new problem (then one Haiku call, about half a US cent). It runs after the HiCetane fetch (07:00/07:30 PKT). The PSO diesel job runs at 06:00 UTC = 11:00 PKT. |
 | `site-agent-monitor` | every 15 min | Quick uptime/critical checks. No AI unless something new breaks (then one Haiku call). |
-| `site-agent-sweep` | every minute | Only calls the worker if a chat answer was interrupted. Idle otherwise. |
+| `site-agent-sweep` | every minute | Only calls the worker if a Telegram question's answer was interrupted. Idle otherwise. |
 | `site-agent-retention` | `30 3 * * *` | Deletes old health checks and audit logs, and expires week-old approvals. |
 
 It does **not** touch the three existing jobs. Once the owner says yes, apply it as a migration (name `site_agent_cron`).
@@ -152,7 +152,7 @@ It does **not** touch the three existing jobs. Once the owner says yes, apply it
 4. Pull `main` again. If it moved, rebase and resolve carefully. Then push the branch, open the PR and summarise the 5 touched spots.
 5. After the owner merges, remove your line from `WORKING_ON.md` (in a follow-up PR).
 
-## 8. Optional: Telegram (chat + approvals from the phone)
+## 8. Telegram (messages on the phone)
 
 1. Create a bot with **@BotFather**, then set `TELEGRAM_BOT_TOKEN`.
 2. Set `TELEGRAM_WEBHOOK_SECRET` to a random string: `openssl rand -hex 24`.
@@ -185,17 +185,16 @@ What the agent does with it:
 
 ## 10. Smoke test
 
-1. Log in as an admin, open **Site Agent**, and press **Run full check**. Within a minute:
-   - The morning report appears in the panel and on Telegram.
-   - No AI is used unless a check finds a new problem.
-   - The header shows "AI this month $0.00 / $5.00".
+1. Log in as an admin, open **Site Agent**, and press **Run check now**. Within a minute:
+   - The morning report streams into the message thread, Claude-style.
+   - The same report arrives on Telegram.
+   - The header shows "AI this month $0.00 / $5.00". No AI is used unless a check finds a new problem.
 2. Expected first findings, based on the data at setup:
    - FYI: ~1,524 containers still at "Confirmed" months after their loading date. This is info only, with no AI call.
-   - Needs attention: 1 overdue invoice. It's new, so it gets one Haiku explanation (about half a US cent).
+   - Needs action: 1 overdue invoice. It's new, so it gets one Haiku explanation (about half a US cent), shown under "🤖 About the new problems".
    - No late orders.
-3. Press **Run full check** again. The same problems now show "(open since …)" with no new AI call. Check with `select count(*) from agent_ai_calls;`.
-4. Ask *"which containers are running late?"* in the chat. The chat model answers, and the cost appears in `agent_ai_calls` and the panel header.
-5. Tell it to fix something small and check that an approval request appears. The default `AGENT_AUTONOMY=readonly` makes every change wait for approval. Approve it and check that the result shows directly, with no extra AI call.
+3. Press **Run check now** again. The same problems now show "(open since …)" with no new AI call. Check with `select count(*) from agent_ai_calls;` (still 1).
+4. Leave the page open. New messages appear on their own within 15 seconds and write themselves out.
 
 ## 11. Troubleshooting
 
@@ -207,7 +206,7 @@ What the agent does with it:
 | Want zero automatic AI calls | Set `AI_EXPLAIN_PROBLEMS=false`. Reports and alerts still arrive, just without the explanation. |
 | Morning report never arrives | Check `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_IDS`, the Vault secrets, then `select * from cron.job_run_details where jobid in (select jobid from cron.job where jobname like 'site-agent-%') order by start_time desc limit 20;`, then the function logs. |
 | Panel says "Only admins can use Site Agent" | The user needs `profiles.role = 'admin'`, or a row in `public.agent_admins`. |
-| No messages on phone | At least one notification channel must be configured (see `.env.example`). Alerts below `NOTIFY_MIN_SEVERITY` stay in the dashboard only. |
+| No messages on phone | At least one notification channel must be configured (see `.env.example`). Alerts below `NOTIFY_MIN_SEVERITY` are shown on the site only. Every message is always on the site. |
 
 ## 12. Local checks you can re-run
 

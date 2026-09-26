@@ -1,17 +1,13 @@
 # Site Agent for LogistiX
 
-A low-cost operations assistant for LogistiX. It lives inside your Supabase project:
+A near-zero-cost operations assistant for LogistiX. It lives inside your Supabase project:
 
-- It checks the website and the database on a schedule and sends you a morning report on Telegram.
-- It alerts you the moment something new breaks.
-- You can ask it questions from the admin panel or from Telegram.
+- It checks the website and the database on a schedule and alerts you the moment something new breaks.
+- It posts every message both **on the site** and **on Telegram**. On the site, its reports and alerts appear in a chat thread that looks and streams like Claude.
 
-**The scheduled checks use no AI at all.** They are plain database queries and HTTP checks. Claude is only used in two situations:
+**The scheduled checks use no AI at all.** They are plain database queries and HTTP checks. The only automatic AI use is when a check finds a **NEW** problem: then one short call to **Claude Haiku** explains it and suggests a fix, once per problem. A day with no new problems makes **zero** AI calls.
 
-1. **A check finds a NEW problem.** One short call to **Claude Haiku** (the cheapest model) explains it and suggests a fix. That happens once per problem, never again while it stays open.
-2. **You ask a question.** Then the bigger model (`claude-opus-5`) answers, using tools to look into your data, site and code.
-
-A day with no new problems makes **zero** AI calls.
+It's a reporter, not a chat: there is no question box on the site. If someone ever messages the Telegram bot with a question, **Claude Sonnet 5** answers it.
 
 > **Wiring it into the site:** give [`HANDOFF.md`](HANDOFF.md) to the Claude chat that works on the LogistiX code.
 
@@ -19,10 +15,20 @@ A day with no new problems makes **zero** AI calls.
 
 | When | What happens | AI cost |
 |---|---|---|
-| **08:00 every morning (PKT)** | 21 rule-based checks run: the website and its JS/CSS files, the Supabase API, database health, failed cron jobs, failed Edge Function calls, security settings, and 12 business rules for orders, ETAs, fleet documents, invoices, contracts and the fuel-price feed. A **morning report** goes to Telegram (and email or WhatsApp if you set them up). | **Free.** Plus one Haiku call (≈ US$0.005) only if a problem is new. |
-| **Every 15 minutes** | Quick uptime checks. A new failure sends you an alert with a short explanation. When it's fixed, you get "✅ Recovered". | **Free.** Plus one Haiku call only if a problem is new. |
-| **You ask a question** (dashboard or Telegram) | The agent investigates with tools and answers. Any change it proposes waits for your approval. | ≈ US$0.05 (simple lookup) to ≈ US$0.50 (deep investigation); typically ≈ US$0.15 |
-| **You approve or reject a change** | The change runs (or doesn't). The result is shown to you directly. | **Free** |
+| **08:00 every morning (PKT)** | 21 rule-based checks run: the website and its JS/CSS files, the Supabase API, database health, failed cron jobs, failed Edge Function calls, security settings, and 12 business rules for orders, ETAs, fleet documents, invoices, contracts and the fuel-price feed. The **morning report** appears on the site and on Telegram. | **Free.** Plus one Haiku call (≈ US$0.005) only if a problem is new. |
+| **Every 15 minutes** | Quick uptime checks. A new failure posts an alert with a short explanation. When it's fixed, you get "✅ Recovered". | **Free.** Plus one Haiku call only if a problem is new. |
+| **"Run check now"** (site) or **/check** (Telegram) | The same full check, on demand. | Same as above |
+| Optional: someone asks the Telegram bot a question | Claude Sonnet 5 answers. Any change it proposes waits for your approval. | ≈ US$0.02–0.20 per question |
+
+## How messages look on the site
+
+The **Site Agent** page is a message thread styled like Claude:
+
+- **Layout:** a centered column, a small ✳ avatar, serif text, and "Today" / "Yesterday" separators.
+- **Message tags:** each message is labelled *Morning report*, *Alert*, *Recovered* or *Needs approval*.
+- **Streaming:** new messages write themselves out, the way Claude writes a reply.
+- **Other tabs:** Alerts (with the AI's suggested fix), Health (every check's latest result) and, only when something is waiting, Approvals.
+- **Spend:** the header shows "AI this month $0.00 / $5.00".
 
 Example morning report on a healthy day:
 
@@ -42,15 +48,17 @@ A problem that is still open the next day shows up as `(open since 26 Sept)`, wi
 |---|---|---|
 | Morning checks + 15-minute monitor | 30 reports, about 2,900 monitor runs | **US$0.00** |
 | Explaining new problems (Claude Haiku) | about 5–10 new problems a month, ≈ US$0.005 each | **≈ US$0.03–0.05** |
-| Your questions (Claude Opus 5, medium effort) | 0 questions → US$0; 20 questions × ≈ US$0.15 average | **US$0 – ≈ US$3** |
+| Questions | none (this agent isn't used for questions) | **US$0.00** |
 | Supabase / Telegram | Everything fits inside normal plan limits; Telegram is free | **US$0.00** |
-| **Total** | | **≈ US$0.05 with no questions; ≈ US$3 if you ask about 20 questions** |
+| **Total** | | **≈ US$0.05 a month (under 10 cents)** |
 
-These are estimates. Question cost depends on how much digging a question needs, and a simple lookup is only a few cents. Three things keep it bounded:
+A bad month with 30 new problems would still be only ≈ US$0.15.
+
+Three things keep it bounded:
 
 - **Hard monthly cap:** `AI_MONTHLY_BUDGET_USD` (default **US$5**). When it's reached, all Site Agent AI calls stop until next month. Checks, reports and alerts keep working.
-- **Spend tracking:** every Claude call is logged with its estimated cost in `agent_ai_calls`. The panel shows "AI this month", and `/cost` on Telegram tells you.
-- **Cheaper questions if you want:** set `AGENT_MODEL=claude-sonnet-5` (roughly half the price per question) or `AGENT_EFFORT=low`. To turn off the automatic explanations entirely, set `AI_EXPLAIN_PROBLEMS=false`; that means zero automatic AI calls ever.
+- **Spend tracking:** every Claude call is logged with its estimated cost in `agent_ai_calls`. The site shows "AI this month", and `/cost` on Telegram tells you.
+- **Zero AI option:** set `AI_EXPLAIN_PROBLEMS=false` for zero automatic AI calls ever. Messages then arrive without the explanation.
 
 > The separate **✦ Research assistant** already in LogistiX (the `research-agent` function) is not part of Site Agent. It uses Claude Opus 5 plus web searches for every message, and it is **not** covered by this cap.
 
@@ -80,24 +88,26 @@ Once you trust it more, `AGENT_AUTONOMY` can be relaxed to `standard` or `full`;
 ## How it works
 
 ```
- pg_cron (08:00 PKT / every 15 min)                   Admin panel (index.html) · Telegram
-            │                                                    │ your question
-            ▼                                                    ▼
-   site-agent-cron: rule-based checks (SQL + HTTP)      site-agent-chat / site-agent-telegram
-            │                                                    │
-            ├─► alerts + morning report ─► Telegram / email      ▼
-            │                                           site-agent-worker ─► Claude Opus 5 + tools
-            └─► NEW problem only ─► 1 × Claude Haiku           (database, site checks, logs,
-                (explain + suggest fix, no tools)               GitHub PRs, alerts, memory)
+ pg_cron (08:00 PKT / every 15 min)
+            │
+            ▼
+   site-agent-cron: rule-based checks (SQL + HTTP) ──► alerts
+            │
+            ├─► NEW problem only ─► 1 × Claude Haiku (explain + suggest fix, no tools)
+            ▼
+   message ──► saved (agent_notifications) ──► site: Claude-style thread (site-agent-api)
+          └──► Telegram / email / WhatsApp / Slack
+
+ Optional: question sent to the Telegram bot ─► site-agent-worker ─► Claude Sonnet 5 + tools
 ```
 
 ## Files
 
 - `supabase/migrations/`: tables (including the AI cost ledger) and schedules
-- `supabase/functions/`: 4 Edge Functions plus shared code
+- `supabase/functions/`: 4 Edge Functions (`site-agent-cron`, `site-agent-api`, `site-agent-telegram`, `site-agent-worker`) plus shared code
   - checks and report: `_shared/checks.ts`, `_shared/report.ts`, `_shared/jobs.ts`
   - the Haiku explanation: `_shared/explain.ts`
   - the cost cap: `_shared/ai_cost.ts`
-- `web/SiteAgentPanel.jsx`: the admin panel for `index.html`
+- `web/SiteAgentPanel.jsx`: the Claude-style message thread for `index.html`
 - `HANDOFF.md`: step-by-step setup for whoever wires it in
 - `.env.example`: all settings, explained

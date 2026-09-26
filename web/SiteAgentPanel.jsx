@@ -1,11 +1,16 @@
 // =============================================================================
 // Site Agent panel for LogistiX (index.html)
 // =============================================================================
+// Shows every message Site Agent sends (morning reports, new-problem alerts with
+// explanations, recoveries, approval requests) as a chat thread that looks and
+// streams like Claude. The same messages also go to Telegram. There is no
+// question box: this agent reports, it doesn't take questions on the site.
+//
 // Paste this whole block into index.html's existing <script type="text/babel">,
 // at MODULE SCOPE (outside every component, e.g. just before the main App
-// component). It uses only globals the page already loads: React 18 UMD +
+// component). It only uses globals the page already loads: React 18 UMD +
 // Tailwind CDN. It does NOT use the Supabase client for data - it only asks it
-// for the signed-in user's access token and talks to the site-agent-chat Edge
+// for the signed-in user's access token and talks to the site-agent-api Edge
 // Function with fetch(), so the lite client's missing .insert()/.limit() don't
 // matter.
 //
@@ -22,24 +27,64 @@
 //    useState/useEffect/... at the top, so we must not declare them again)
 // =============================================================================
 
-const SA_POLL_WORKING_MS = 2500;
-const SA_POLL_IDLE_MS = 20000;
+const SA_POLL_MESSAGES_MS = 15000;
+const SA_POLL_SUMMARY_MS = 30000;
 const SA_STATUS_ORDER = ["fail", "warn", "ok", "skipped"];
 const SA_STATUS_ICON = { ok: "✅", warn: "🟡", fail: "🔴", skipped: "⚪" };
 const SA_SEV_ICON = { critical: "🔴", warning: "🟡", info: "ℹ️" };
-const SA_SEV_BORDER = { critical: "border-l-red-500", warning: "border-l-amber-500", info: "border-l-blue-500" };
+const SA_SEV_BORDER = { critical: "border-l-red-500", warning: "border-l-amber-500", info: "border-l-sky-500" };
+const SA_KIND = {
+  report: { label: "Morning report", cls: "bg-[#3a3a36] text-[#d6d3ca]" },
+  alert: { label: "Alert", cls: "bg-red-500/15 text-red-300" },
+  recovery: { label: "Recovered", cls: "bg-emerald-500/15 text-emerald-300" },
+  approval: { label: "Needs approval", cls: "bg-amber-500/15 text-amber-300" },
+  system: { label: "Notice", cls: "bg-[#3a3a36] text-[#d6d3ca]" },
+};
+// Claude-like warm dark palette (scoped to this panel)
+const SA_C = {
+  bg: "bg-[#262624]",
+  panel: "bg-[#1f1e1d]",
+  border: "border-[#3d3d3a]",
+  text: "text-[#ececea]",
+  body: "text-[#e5e2d9]",
+  muted: "text-[#9b9890]",
+  faint: "text-[#75726b]",
+  accent: "#d97757",
+};
 
 function saCx(...a) {
   return a.filter(Boolean).join(" ");
 }
 
-function saAgo(iso) {
-  if (!iso) return "";
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+// Postgres timestamps ("2026-09-26 12:18:32.482643+00") -> Date, in every browser.
+function saDate(v) {
+  if (!v) return new Date(NaN);
+  return new Date(String(v).replace(" ", "T").replace(/(\.\d{3})\d+/, "$1").replace(/([+-]\d{2})$/, "$1:00"));
+}
+
+function saAgo(v) {
+  const d = saDate(v);
+  if (isNaN(d)) return "";
+  const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
   if (s < 60) return "just now";
   if (s < 3600) return Math.floor(s / 60) + "m ago";
   if (s < 86400) return Math.floor(s / 3600) + "h ago";
-  return new Date(iso).toLocaleDateString();
+  return d.toLocaleDateString();
+}
+
+function saTime(v) {
+  const d = saDate(v);
+  return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function saDayLabel(v) {
+  const d = saDate(v);
+  if (isNaN(d)) return "";
+  const today = new Date();
+  const yest = new Date(Date.now() - 86400000);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === yest.toDateString()) return "Yesterday";
+  return d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 }
 
 function saPretty(v) {
@@ -51,15 +96,7 @@ function saPretty(v) {
   }
 }
 
-function saResultText(block) {
-  if (!block) return "";
-  const c = block.content;
-  if (typeof c === "string") return c;
-  if (Array.isArray(c)) return c.map((b) => (b && typeof b.text === "string" ? b.text : saPretty(b))).join("\n");
-  return saPretty(c);
-}
-
-// ---- tiny markdown renderer (React elements only - no innerHTML) -------------
+// ---- markdown-ish renderer (React elements only - no innerHTML) ----------------
 function saInline(text) {
   const out = [];
   const re = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|https?:\/\/[^\s)]+)/g;
@@ -69,139 +106,85 @@ function saInline(text) {
   while ((m = re.exec(text))) {
     if (m.index > last) out.push(text.slice(last, m.index));
     const tok = m[0];
-    if (tok.startsWith("**")) out.push(<strong key={i++} className="text-white">{tok.slice(2, -2)}</strong>);
-    else if (tok.startsWith("*")) out.push(<strong key={i++} className="text-white">{tok.slice(1, -1)}</strong>);
-    else if (tok.startsWith("`")) out.push(<code key={i++} className="px-1 rounded bg-slate-800 text-[0.92em]">{tok.slice(1, -1)}</code>);
-    else out.push(<a key={i++} href={tok} target="_blank" rel="noreferrer" className="text-blue-400 underline">{tok}</a>);
+    if (tok.startsWith("**")) out.push(<strong key={i++} className="font-semibold text-[#f4f2ec]">{tok.slice(2, -2)}</strong>);
+    else if (tok.startsWith("*")) out.push(<strong key={i++} className="font-semibold text-[#f4f2ec]">{tok.slice(1, -1)}</strong>);
+    else if (tok.startsWith("`")) {
+      out.push(<code key={i++} className="font-mono text-[0.85em] px-1 py-0.5 rounded bg-[#1f1e1d] text-[#e8a787]">{tok.slice(1, -1)}</code>);
+    } else out.push(<a key={i++} href={tok} target="_blank" rel="noreferrer" className="underline decoration-[#d97757]/60 hover:text-white">{tok}</a>);
     last = m.index + tok.length;
   }
   if (last < text.length) out.push(text.slice(last));
   return out;
 }
 
+const SA_BULLET = /^\s*([-*•]|\d+[.)])\s+/;
+const SA_SUBHEAD = /^\s*▸\s+/; // "▸ problem name" lines in AI explanations
+
 function SAMarkdown({ text }) {
   const parts = String(text || "").split(/```[a-zA-Z]*\n?/);
-  return (
-    <div className="space-y-2 text-sm leading-relaxed">
-      {parts.map((part, idx) => {
-        if (idx % 2 === 1) {
-          return (
-            <pre key={idx} className="bg-slate-950 border border-slate-800 rounded-md p-2 text-xs overflow-auto whitespace-pre-wrap">
-              {part.replace(/\n$/, "")}
-            </pre>
-          );
-        }
-        return part.split(/\n{2,}/).map((para, j) => {
-          const lines = para.split("\n").filter((l) => l.trim() !== "");
-          if (!lines.length) return null;
-          if (lines.every((l) => /^\s*([-*•]|\d+[.)])\s+/.test(l))) {
-            return (
-              <ul key={idx + "-" + j} className="list-disc pl-5 space-y-0.5">
-                {lines.map((l, k) => <li key={k}>{saInline(l.replace(/^\s*([-*•]|\d+[.)])\s+/, ""))}</li>)}
-              </ul>
-            );
+  const blocks = [];
+  parts.forEach((part, idx) => {
+    if (idx % 2 === 1) {
+      blocks.push(
+        <pre key={"c" + idx} className="font-mono text-[12.5px] leading-5 bg-[#1f1e1d] border border-[#3d3d3a] rounded-lg p-3 overflow-auto whitespace-pre-wrap">
+          {part.replace(/\n$/, "")}
+        </pre>,
+      );
+      return;
+    }
+    part.split(/\n{2,}/).forEach((para, j) => {
+      const lines = para.split("\n").filter((l) => l.trim() !== "");
+      if (!lines.length) return;
+      const items = []; // {type: "h"|"p"|"ul", ...}
+      let list = null;
+      lines.forEach((l, k) => {
+        const bullet = SA_BULLET.exec(l);
+        if (bullet) {
+          if (!list) {
+            list = { type: "ul", items: [] };
+            items.push(list);
           }
-          return (
-            <p key={idx + "-" + j}>
-              {lines.map((l, k) => (
-                <span key={k}>
-                  {/^#{1,4}\s/.test(l) ? <strong className="text-white">{saInline(l.replace(/^#{1,4}\s/, ""))}</strong> : saInline(l)}
-                  {k < lines.length - 1 && <br />}
-                </span>
-              ))}
-            </p>
-          );
-        });
-      })}
-    </div>
-  );
-}
-
-// ---- one tool call ("step") with its result ------------------------------------
-function SAToolStep({ call, result }) {
-  const input = call.input || {};
-  const summary = typeof input.sql === "string"
-    ? input.sql.replace(/\s+/g, " ").slice(0, 90)
-    : input.url || input.title || input.path || input.grep || "";
-  const failed = result && result.is_error === true;
-  return (
-    <details className={saCx("max-w-3xl w-full rounded-lg border text-xs bg-slate-900/60", failed ? "border-red-900" : "border-slate-800")}>
-      <summary className="cursor-pointer px-3 py-1.5 flex gap-2 items-center text-slate-400 select-none">
-        <span>{!result ? "⏳" : failed ? "⚠️" : "🔧"}</span>
-        <span className="font-mono text-slate-200">{String(call.name)}</span>
-        {summary && <span className="truncate">{String(summary)}</span>}
-      </summary>
-      <div className="px-3 pb-2">
-        <div className="text-[10px] uppercase tracking-wide text-slate-500 mt-1">Input</div>
-        <pre className="bg-slate-950 border border-slate-800 rounded p-2 overflow-auto max-h-64 whitespace-pre-wrap">{saPretty(input)}</pre>
-        {result && (
-          <>
-            <div className="text-[10px] uppercase tracking-wide text-slate-500 mt-1">Result</div>
-            <pre className="bg-slate-950 border border-slate-800 rounded p-2 overflow-auto max-h-64 whitespace-pre-wrap">
-              {saResultText(result).slice(0, 8000)}
-            </pre>
-          </>
-        )}
-      </div>
-    </details>
-  );
-}
-
-function SAMessageList({ messages }) {
-  const results = React.useMemo(() => {
-    const map = {};
-    (messages || []).forEach((m) => {
-      if (m.role !== "user") return;
-      (m.content || []).forEach((b) => {
-        if (b.type === "tool_result") map[b.tool_use_id] = b;
+          list.items.push({ text: l.slice(bullet[0].length), sub: [] });
+        } else if (/^\s{2,}\S/.test(l) && list && list.items.length) {
+          list.items[list.items.length - 1].sub.push(l.trim()); // "   e.g. ..." continuation lines
+        } else {
+          list = null;
+          const heading = /^#{1,4}\s/.test(l) || SA_SUBHEAD.test(l) || (lines[k + 1] && SA_BULLET.test(lines[k + 1])) ||
+            (l.trim().length <= 60 && /:\s*$/.test(l) && k < lines.length - 1); // short "Title:" line with text below
+          items.push({ type: heading ? "h" : "p", text: l.replace(/^#{1,4}\s/, "").replace(SA_SUBHEAD, "") });
+        }
       });
+      blocks.push(
+        <div key={idx + "-" + j} className="space-y-1.5">
+          {items.map((it, n) =>
+            it.type === "ul"
+              ? (
+                <ul key={n} className="list-disc pl-6 space-y-1 marker:text-[#8f8c84]">
+                  {it.items.map((li, q) => (
+                    <li key={q}>
+                      {saInline(li.text)}
+                      {li.sub.map((s, r) => <div key={r} className="text-[#a9a69e] text-[0.93em]">{saInline(s)}</div>)}
+                    </li>
+                  ))}
+                </ul>
+              )
+              : it.type === "h"
+              ? <p key={n} className="font-semibold text-[#f4f2ec]">{saInline(it.text)}</p>
+              : <p key={n}>{saInline(it.text)}</p>
+          )}
+        </div>,
+      );
     });
-    return map;
-  }, [messages]);
+  });
+  return <div className="space-y-4">{blocks}</div>;
+}
 
+// ---- small pieces -----------------------------------------------------------------
+function SASpark({ size = 16, className = "" }) {
   return (
-    <>
-      {(messages || []).map((m) => {
-        if (m.role === "user") {
-          if (m.display_text) {
-            return (
-              <div key={m.id} className="self-end max-w-3xl bg-blue-600/20 border border-blue-600/40 text-slate-100 rounded-2xl rounded-br-sm px-4 py-2">
-                <SAMarkdown text={m.display_text} />
-              </div>
-            );
-          }
-          const texts = (m.content || []).filter((b) => b.type === "text").map((b) => String(b.text));
-          if (!texts.length) return null; // only tool results - shown with their tool calls
-          const text = texts.join("\n\n");
-          return (
-            <details key={m.id} className="self-center max-w-3xl text-xs text-slate-500">
-              <summary className="cursor-pointer">🤖 {text.split("\n")[0].replace(/^\[|\]$/g, "").slice(0, 140)}</summary>
-              <pre className="whitespace-pre-wrap bg-slate-900/60 border border-slate-800 rounded p-2 mt-1">{text}</pre>
-            </details>
-          );
-        }
-        return (
-          <div key={m.id} className="flex flex-col gap-1.5 items-start">
-            {(m.content || []).map((b, i) => {
-              if (b.type === "text" && String(b.text).trim()) {
-                return (
-                  <div key={i} className="max-w-3xl bg-slate-900 border border-slate-800 text-slate-200 rounded-2xl rounded-bl-sm px-4 py-2">
-                    <SAMarkdown text={b.text} />
-                  </div>
-                );
-              }
-              if (b.type === "tool_use") return <SAToolStep key={i} call={b} result={results[b.id]} />;
-              if (b.type === "server_tool_use") {
-                const q = b.input && b.input.query;
-                return <div key={i} className="text-xs text-slate-500 px-1">🔎 Web search{q ? ": " + q : ""}</div>;
-              }
-              if (b.type === "compaction") return <div key={i} className="text-xs text-slate-500 px-1">🗜️ Earlier conversation summarised</div>;
-              return null;
-            })}
-          </div>
-        );
-      })}
-    </>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M12 2.5l1.6 6.1 5.6-3-3 5.6 6.1 1.6-6.1 1.6 3 5.6-5.6-3L12 21.5l-1.6-6.1-5.6 3 3-5.6L1.7 11.2l6.1-1.6-3-5.6 5.6 3z" />
+    </svg>
   );
 }
 
@@ -216,24 +199,101 @@ function SiteAgentIcon({ size = 16, className = "" }) {
   );
 }
 
+function SAAvatar({ busy }) {
+  return (
+    <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5 bg-[#d97757]/15">
+      <SASpark size={15} className={saCx("text-[#d97757]", busy && "animate-spin")} />
+    </div>
+  );
+}
+
+// Reveals text progressively, like Claude writing a reply.
+function SAStreamText({ text, animate }) {
+  const full = String(text || "");
+  const [shown, setShown] = React.useState(animate ? 0 : full.length);
+  React.useEffect(() => {
+    const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!animate || reduce) {
+      setShown(full.length);
+      return undefined;
+    }
+    setShown(0);
+    const step = Math.max(3, Math.ceil(full.length / 110)); // about 2 seconds for any length
+    const t = setInterval(() => {
+      setShown((n) => {
+        const next = Math.min(full.length, n + step);
+        if (next >= full.length) clearInterval(t);
+        return next;
+      });
+    }, 18);
+    return () => clearInterval(t);
+  }, [full, animate]);
+  const streaming = shown < full.length;
+  return (
+    <div>
+      <SAMarkdown text={streaming ? full.slice(0, shown) : full} />
+      {streaming && <span className="inline-block w-2 h-2 ml-1 rounded-full bg-[#d97757] animate-pulse align-middle" />}
+    </div>
+  );
+}
+
+function SAFeedMessage({ msg, animate }) {
+  const [copied, setCopied] = React.useState(false);
+  const kind = SA_KIND[msg.kind] || SA_KIND.system;
+  const copy = () => {
+    const text = msg.title + "\n\n" + msg.body;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }).catch(() => {});
+    }
+  };
+  return (
+    <div className="flex gap-3 group">
+      <SAAvatar busy={false} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap text-xs mb-1.5">
+          <span className="font-medium text-[#ececea]">Site Agent</span>
+          <span className={SA_C.faint}>{saTime(msg.created_at)}</span>
+          <span className={saCx("rounded-full px-2 py-0.5 text-[10.5px] font-medium", kind.cls)}>{kind.label}</span>
+        </div>
+        <div className="font-serif text-[15.5px] leading-7 text-[#e5e2d9]">
+          <p className="font-semibold text-[#f4f2ec] mb-2">{msg.title}</p>
+          <SAStreamText text={msg.body} animate={animate} />
+        </div>
+        <div className="mt-1.5 h-6 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onClick={copy} className="text-[11px] text-[#9b9890] hover:text-[#ececea] px-1.5 py-0.5 rounded hover:bg-[#3a3a36]">
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- the panel -------------------------------------------------------------------
 function SiteAgentPanel({ client, supabaseUrl, anonKey }) {
   // All hooks first - no early returns above this block.
-  const [tab, setTab] = React.useState("chat");
-  const [summary, setSummary] = React.useState({ conversations: [], alerts: [], approvals: [], health: { full: [], quick: [] }, autonomy: "" });
-  const [selected, setSelected] = React.useState(null);
-  const [conv, setConv] = React.useState({ messages: [], run: null });
-  const [draft, setDraft] = React.useState("");
+  const [tab, setTab] = React.useState("messages");
+  const [messages, setMessages] = React.useState([]);
+  const [hasMore, setHasMore] = React.useState(false);
+  const [animateFrom, setAnimateFrom] = React.useState(Infinity); // ids above this stream in
+  const [summary, setSummary] = React.useState({ alerts: [], approvals: [], health: { full: [], quick: [] }, autonomy: "" });
+  const [loaded, setLoaded] = React.useState(false);
+  const [checking, setChecking] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState(null);
-  const [loaded, setLoaded] = React.useState(false);
-  const bottomRef = React.useRef(null);
+  const [showJump, setShowJump] = React.useState(false);
+  const scrollRef = React.useRef(null);
+  const lastIdRef = React.useRef(0);
+  const nearBottomRef = React.useRef(true);
 
   const call = React.useCallback(async (body) => {
     const { data } = await client.auth.getSession();
     const token = data && data.session && data.session.access_token;
     if (!token) throw new Error("Your session has expired - please sign in again.");
-    const res = await fetch(supabaseUrl + "/functions/v1/site-agent-chat", {
+    const res = await fetch(supabaseUrl + "/functions/v1/site-agent-api", {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: anonKey, Authorization: "Bearer " + token },
       body: JSON.stringify(body),
@@ -243,54 +303,88 @@ function SiteAgentPanel({ client, supabaseUrl, anonKey }) {
     return json;
   }, [client, supabaseUrl, anonKey]);
 
+  const scrollToBottom = React.useCallback((smooth) => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+    setShowJump(false);
+  }, []);
+
+  const loadInitial = React.useCallback(async () => {
+    try {
+      const res = await call({ action: "messages" });
+      const rows = res.messages || [];
+      setMessages(rows);
+      setHasMore(!!res.has_more);
+      lastIdRef.current = rows.length ? rows[rows.length - 1].id : 0;
+      setAnimateFrom(lastIdRef.current); // only messages that arrive from now on stream in
+      setLoaded(true);
+      setTimeout(() => scrollToBottom(false), 0);
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [call, scrollToBottom]);
+
+  const loadNew = React.useCallback(async () => {
+    try {
+      const res = await call({ action: "messages", after_id: lastIdRef.current });
+      const rows = res.messages || [];
+      if (!rows.length) return 0;
+      lastIdRef.current = rows[rows.length - 1].id;
+      setMessages((prev) => prev.concat(rows.filter((r) => !prev.some((p) => p.id === r.id))));
+      if (nearBottomRef.current) setTimeout(() => scrollToBottom(true), 50);
+      else setShowJump(true);
+      return rows.length;
+    } catch (e) {
+      setError(e.message);
+      return 0;
+    }
+  }, [call, scrollToBottom]);
+
+  const loadOlder = React.useCallback(async () => {
+    if (!messages.length) return;
+    try {
+      const el = scrollRef.current;
+      const before = el ? el.scrollHeight : 0;
+      const res = await call({ action: "messages", before_id: messages[0].id });
+      setMessages((prev) => (res.messages || []).concat(prev));
+      setHasMore(!!res.has_more);
+      setTimeout(() => {
+        if (el) el.scrollTop = el.scrollHeight - before;
+      }, 0);
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [call, messages]);
+
   const loadSummary = React.useCallback(async () => {
     try {
       setSummary(await call({ action: "summary" }));
-      setLoaded(true);
     } catch (e) {
       setError(e.message);
     }
   }, [call]);
-
-  const loadConversation = React.useCallback(async (id) => {
-    if (!id) return;
-    try {
-      setConv(await call({ action: "get_conversation", conversation_id: id }));
-    } catch (e) {
-      setError(e.message);
-    }
-  }, [call]);
-
-  const run = conv.run;
-  const working = !!run && (run.status === "queued" || run.status === "running");
 
   React.useEffect(() => {
+    loadInitial();
     loadSummary();
-    const t = setInterval(() => {
+  }, [loadInitial, loadSummary]);
+
+  React.useEffect(() => {
+    const t1 = setInterval(() => {
+      if (!document.hidden) loadNew();
+    }, SA_POLL_MESSAGES_MS);
+    const t2 = setInterval(() => {
       if (!document.hidden) loadSummary();
-    }, SA_POLL_IDLE_MS);
-    return () => clearInterval(t);
-  }, [loadSummary]);
+    }, SA_POLL_SUMMARY_MS);
+    return () => {
+      clearInterval(t1);
+      clearInterval(t2);
+    };
+  }, [loadNew, loadSummary]);
 
   React.useEffect(() => {
-    if (selected) loadConversation(selected);
-    else setConv({ messages: [], run: null });
-  }, [selected, loadConversation]);
-
-  React.useEffect(() => {
-    if (!selected || !working) return undefined;
-    const t = setInterval(() => loadConversation(selected), SA_POLL_WORKING_MS);
-    return () => clearInterval(t);
-  }, [selected, working, loadConversation]);
-
-  // When a run finishes, refresh alerts/approvals too.
-  React.useEffect(() => {
-    if (!working && selected) loadSummary();
-  }, [working, selected, loadSummary]);
-
-  React.useEffect(() => {
-    if (bottomRef.current) bottomRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [conv.messages.length, working]);
+    if (tab === "messages") setTimeout(() => scrollToBottom(false), 0);
+  }, [tab, scrollToBottom]);
 
   // ---- actions ----
   async function act(fn) {
@@ -305,19 +399,17 @@ function SiteAgentPanel({ client, supabaseUrl, anonKey }) {
     }
   }
 
-  const send = () => act(async () => {
-    const message = draft.trim();
-    if (!message || working) return;
-    const res = await call({ action: "send", message, conversation_id: selected || undefined });
-    setDraft("");
-    if (res.conversation_id !== selected) setSelected(res.conversation_id);
-    else await loadConversation(res.conversation_id);
-    loadSummary();
-  });
-
-  const stop = () => act(async () => {
-    if (run) await call({ action: "stop", run_id: run.id });
-    await loadConversation(selected);
+  const runCheck = () => act(async () => {
+    setTab("messages");
+    setChecking(true);
+    setTimeout(() => scrollToBottom(true), 50);
+    try {
+      await call({ action: "run_check", kind: "daily" });
+      await loadNew();
+      await loadSummary();
+    } finally {
+      setChecking(false);
+    }
   });
 
   const decide = (id, action) => act(async () => {
@@ -326,204 +418,210 @@ function SiteAgentPanel({ client, supabaseUrl, anonKey }) {
     await loadSummary();
   });
 
-  const runFullCheck = () => act(async () => {
-    const res = await call({ action: "run_check", kind: "daily" });
-    setTab("chat");
-    setSelected(res.conversation_id);
-    loadSummary();
-  });
-
   const setAlert = (id, status) => act(async () => {
     await call({ action: "update_alert", alert_id: id, status });
     await loadSummary();
   });
 
-  const askAbout = (a) => {
-    setTab("chat");
-    setSelected(null);
-    setDraft('Look into alert #' + a.id + ' ("' + a.title + '") and fix it if you can.');
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+    if (nearBottomRef.current) setShowJump(false);
   };
 
   const alerts = summary.alerts || [];
   const approvals = summary.approvals || [];
   const critical = alerts.filter((a) => a.severity === "critical").length;
   const tabCls = (active) => saCx(
-    "px-3 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
-    active ? "border-blue-600 text-white" : "border-transparent text-slate-500 hover:text-slate-300",
+    "px-3 py-1.5 text-sm rounded-lg transition-colors whitespace-nowrap",
+    active ? "bg-[#3a3a36] text-[#f4f2ec]" : "text-[#9b9890] hover:text-[#ececea] hover:bg-[#30302d]",
   );
-  const btn = "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-800 transition-colors disabled:opacity-50";
-  const btnPrimary = "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-50";
+  const btn = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium border border-[#3d3d3a] text-[#d6d3ca] hover:bg-[#30302d] transition-colors disabled:opacity-50";
+  const btnPrimary = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium bg-[#d97757] text-white hover:bg-[#c96a4b] transition-colors disabled:opacity-50";
+
+  let lastDay = "";
 
   return (
-    <div className="flex flex-col h-[calc(100vh-7rem)] min-h-[560px] bg-slate-950 text-slate-200 border border-slate-800 rounded-xl overflow-hidden">
-      <div className="flex items-center gap-3 px-4 border-b border-slate-800 bg-slate-900/50 flex-wrap">
-        <div className="flex items-center gap-2 py-2 font-semibold text-white">
-          <SiteAgentIcon size={18} className="text-blue-400" /> Site Agent
-          {summary.autonomy && (
-            <span className="text-[10px] font-normal uppercase tracking-wide text-slate-500 border border-slate-800 rounded px-1.5 py-0.5">
-              {summary.autonomy === "readonly" ? "approve every change" : summary.autonomy}
-            </span>
-          )}
-          {typeof summary.ai_spend_month_usd === "number" && (
-            <span
-              className="text-[10px] font-normal text-slate-500 border border-slate-800 rounded px-1.5 py-0.5"
-              title="Estimated Claude API spend this month (checks and reports are free; AI is only used for your questions and to explain new problems)"
-            >
-              AI this month ${summary.ai_spend_month_usd.toFixed(2)}{summary.ai_budget_usd > 0 ? " / $" + summary.ai_budget_usd.toFixed(2) : ""}
-            </span>
-          )}
+    <div className={saCx("flex flex-col h-[calc(100vh-7rem)] min-h-[560px] rounded-xl overflow-hidden border", SA_C.bg, SA_C.border, SA_C.text)}>
+      {/* header */}
+      <div className={saCx("flex items-center gap-2 px-4 py-2.5 border-b flex-wrap", SA_C.border)}>
+        <div className="flex items-center gap-2 font-medium mr-2">
+          <SASpark size={16} className="text-[#d97757]" /> Site Agent
         </div>
         <div className="flex gap-1 flex-1 flex-wrap">
-          <button className={tabCls(tab === "chat")} onClick={() => setTab("chat")}>Chat</button>
+          <button className={tabCls(tab === "messages")} onClick={() => setTab("messages")}>Messages</button>
           <button className={tabCls(tab === "alerts")} onClick={() => setTab("alerts")}>
             Alerts{alerts.length > 0 && (
               <span className={saCx("ml-1.5 rounded-full px-1.5 text-[10px] text-white", critical ? "bg-red-600" : "bg-amber-600")}>{alerts.length}</span>
             )}
           </button>
-          <button className={tabCls(tab === "approvals")} onClick={() => setTab("approvals")}>
-            Approvals{approvals.length > 0 && <span className="ml-1.5 rounded-full px-1.5 text-[10px] text-white bg-red-600">{approvals.length}</span>}
-          </button>
+          {approvals.length > 0 && (
+            <button className={tabCls(tab === "approvals")} onClick={() => setTab("approvals")}>
+              Approvals<span className="ml-1.5 rounded-full px-1.5 text-[10px] text-white bg-red-600">{approvals.length}</span>
+            </button>
+          )}
           <button className={tabCls(tab === "health")} onClick={() => setTab("health")}>Health</button>
         </div>
-        <button className={btn} disabled={busy} onClick={runFullCheck} title="Run the full morning check now (rule-based, no AI cost unless a new problem is found)">
-          {busy ? "Working…" : "Run full check"}
+        {typeof summary.ai_spend_month_usd === "number" && (
+          <span
+            className="text-[11px] text-[#9b9890] border border-[#3d3d3a] rounded-full px-2 py-0.5"
+            title="Estimated Claude API spend this month. Reports and checks are free; AI is only used to explain new problems."
+          >
+            AI this month ${summary.ai_spend_month_usd.toFixed(2)}{summary.ai_budget_usd > 0 ? " / $" + summary.ai_budget_usd.toFixed(2) : ""}
+          </span>
+        )}
+        <button className={btnPrimary} disabled={busy} onClick={runCheck} title="Run the full check now (rule-based, free unless a new problem is found)">
+          Run check now
         </button>
       </div>
 
       {error && (
-        <div className="mx-4 mt-3 px-3 py-2 rounded-lg bg-red-950/60 border border-red-900 text-red-300 text-sm cursor-pointer" onClick={() => setError(null)}>
+        <div className="mx-4 mt-3 px-3 py-2 rounded-lg bg-red-950/50 border border-red-900/70 text-red-300 text-sm cursor-pointer" onClick={() => setError(null)}>
           {error}
         </div>
       )}
 
-      {tab === "chat" && (
-        <div className="flex flex-1 min-h-0 flex-col md:flex-row">
-          <div className="md:w-60 shrink-0 border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto p-2 flex md:flex-col gap-1 max-h-40 md:max-h-none">
-            <button className={saCx(btnPrimary, "justify-center mb-1 shrink-0")} onClick={() => setSelected(null)}>+ New chat</button>
-            {(summary.conversations || []).map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setSelected(c.id)}
-                className={saCx("text-left rounded-md px-2 py-1.5 shrink-0 md:shrink", c.id === selected ? "bg-slate-800" : "hover:bg-slate-900")}
-              >
-                <div className="text-xs text-slate-200 truncate max-w-[14rem]">
-                  {c.source === "system" ? "🤖 " : c.source === "telegram" ? "✈️ " : ""}{c.title}
-                </div>
-                <div className="text-[10px] text-slate-500">{saAgo(c.updated_at)}</div>
-              </button>
-            ))}
-          </div>
-
-          <div className="flex-1 flex flex-col min-w-0">
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
-              {!selected && (
-                <div className="text-center text-slate-500 py-10 text-sm space-y-2">
-                  <div className="text-slate-300 font-medium">Ask anything about the site and your data.</div>
-                  <div>“Which containers are running late?” · “Check the website for broken pages” · “Why did the fuel price stop updating?” · “Summarise today's orders”</div>
-                  <div className="text-xs">Each question costs a few cents of AI time. Morning reports and alerts are free.</div>
+      {/* messages thread */}
+      {tab === "messages" && (
+        <div className="relative flex-1 min-h-0">
+          <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
+            <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-7">
+              {hasMore && (
+                <div className="text-center">
+                  <button className={btn} onClick={loadOlder}>Load earlier messages</button>
                 </div>
               )}
-              <SAMessageList messages={conv.messages} />
-              {working && (
-                <div className="flex items-center gap-3 text-slate-400 text-sm">
-                  <span className="animate-pulse">● ● ●</span> Working…
-                  <button className={btn} onClick={stop}>Stop</button>
+              {loaded && !messages.length && !checking && (
+                <div className="text-center py-16 space-y-3">
+                  <SASpark size={28} className="text-[#d97757] mx-auto" />
+                  <div className="font-serif text-xl text-[#ececea]">No messages yet</div>
+                  <div className="text-sm text-[#9b9890]">The first morning report arrives at 8:00. Alerts appear here the moment something breaks.</div>
+                  <button className={btnPrimary} disabled={busy} onClick={runCheck}>Run check now</button>
                 </div>
               )}
-              {run && run.status === "error" && (
-                <div className="px-3 py-2 rounded-lg bg-red-950/60 border border-red-900 text-red-300 text-sm">The agent hit an error: {run.error}</div>
+              {messages.map((m) => {
+                const day = saDayLabel(m.created_at);
+                const divider = day !== lastDay;
+                lastDay = day;
+                return (
+                  <div key={m.id}>
+                    {divider && (
+                      <div className="flex items-center gap-3 mb-6">
+                        <div className="h-px flex-1 bg-[#3d3d3a]" />
+                        <span className="text-[11px] text-[#75726b]">{day}</span>
+                        <div className="h-px flex-1 bg-[#3d3d3a]" />
+                      </div>
+                    )}
+                    <SAFeedMessage msg={m} animate={m.id > animateFrom} />
+                  </div>
+                );
+              })}
+              {checking && (
+                <div className="flex gap-3">
+                  <SAAvatar busy={true} />
+                  <div className="text-sm text-[#9b9890] pt-1 animate-pulse">Running checks…</div>
+                </div>
               )}
-              <div ref={bottomRef} />
-            </div>
-            <div className="flex gap-2 p-3 border-t border-slate-800 items-end">
-              <textarea
-                value={draft}
-                rows={2}
-                disabled={working}
-                placeholder={working ? "The agent is working…" : "Message Site Agent (Enter to send, Shift+Enter for a new line)"}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    send();
-                  }
-                }}
-                className="flex-1 resize-y min-h-[42px] max-h-48 rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-600"
-              />
-              <button className={btnPrimary} disabled={busy || working || !draft.trim()} onClick={send}>Send</button>
+              <div className="text-center text-[11px] text-[#75726b] pt-2">
+                Site Agent posts its reports and alerts here and on Telegram.
+              </div>
             </div>
           </div>
+          {showJump && (
+            <button
+              onClick={() => scrollToBottom(true)}
+              className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full px-3 py-1.5 text-xs bg-[#3a3a36] text-[#f4f2ec] border border-[#4a4a45] shadow-lg"
+            >
+              New messages ↓
+            </button>
+          )}
         </div>
       )}
 
       {tab === "alerts" && (
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {loaded && !alerts.length && <div className="text-center text-slate-500 py-10">No open alerts. ✅</div>}
-          {alerts.map((a) => (
-            <div key={a.id} className={saCx("bg-slate-900/50 border border-slate-800 border-l-4 rounded-lg p-3", SA_SEV_BORDER[a.severity])}>
-              <div className="flex justify-between gap-3 flex-wrap mb-1">
-                <div className="text-slate-100 font-medium">{SA_SEV_ICON[a.severity]} {a.title}</div>
-                <div className="text-[11px] text-slate-500">
-                  #{a.id} · {a.category} · {saAgo(a.last_seen_at)}{a.occurrences > 1 ? " · seen " + a.occurrences + "×" : ""}{a.status === "acknowledged" ? " · acknowledged" : ""}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-3">
+            {!alerts.length && <div className="text-center text-[#9b9890] py-10">No open alerts. ✅</div>}
+            {alerts.map((a) => (
+              <div key={a.id} className={saCx("bg-[#1f1e1d] border border-[#3d3d3a] border-l-4 rounded-lg p-3", SA_SEV_BORDER[a.severity])}>
+                <div className="flex justify-between gap-3 flex-wrap mb-1">
+                  <div className="text-[#f4f2ec] font-medium">{SA_SEV_ICON[a.severity]} {a.title}</div>
+                  <div className="text-[11px] text-[#75726b]">
+                    #{a.id} · since {saAgo(a.first_seen_at)}{a.occurrences > 1 ? " · seen " + a.occurrences + "×" : ""}{a.status === "acknowledged" ? " · acknowledged" : ""}
+                  </div>
+                </div>
+                {a.ai_note && (
+                  <div className="font-serif text-[14.5px] leading-6 text-[#e5e2d9] mt-2">
+                    <SAMarkdown text={a.ai_note} />
+                  </div>
+                )}
+                {a.body && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs text-[#9b9890]">Check details</summary>
+                    <pre className="font-mono text-[12px] bg-[#262624] border border-[#3d3d3a] rounded p-2 mt-1 overflow-auto max-h-64 whitespace-pre-wrap">{a.body}</pre>
+                  </details>
+                )}
+                <div className="flex gap-2 mt-2 flex-wrap">
+                  {a.status === "open" && <button className={btn} disabled={busy} onClick={() => setAlert(a.id, "acknowledged")}>Acknowledge</button>}
+                  <button className={btn} disabled={busy} onClick={() => setAlert(a.id, "resolved")}>Resolve</button>
                 </div>
               </div>
-              {a.body && <div className="text-slate-300"><SAMarkdown text={a.body} /></div>}
-              <div className="flex gap-2 mt-2 flex-wrap">
-                {a.status === "open" && <button className={btn} disabled={busy} onClick={() => setAlert(a.id, "acknowledged")}>Acknowledge</button>}
-                <button className={btn} disabled={busy} onClick={() => setAlert(a.id, "resolved")}>Resolve</button>
-                <button className={btn} onClick={() => askAbout(a)}>Ask agent</button>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 
       {tab === "approvals" && (
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {loaded && !approvals.length && <div className="text-center text-slate-500 py-10">Nothing is waiting for your approval.</div>}
-          {approvals.map((a) => (
-            <div key={a.id} className="bg-slate-900/50 border border-slate-800 border-l-4 border-l-amber-500 rounded-lg p-3">
-              <div className="flex justify-between gap-3 flex-wrap mb-1">
-                <div className="text-slate-100 font-medium">🔐 #{a.id} · {a.tool_name}</div>
-                <div className="text-[11px] text-slate-500">{saAgo(a.created_at)}</div>
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-3">
+            {!approvals.length && <div className="text-center text-[#9b9890] py-10">Nothing is waiting for your approval.</div>}
+            {approvals.map((a) => (
+              <div key={a.id} className="bg-[#1f1e1d] border border-[#3d3d3a] border-l-4 border-l-amber-500 rounded-lg p-3">
+                <div className="flex justify-between gap-3 flex-wrap mb-1">
+                  <div className="text-[#f4f2ec] font-medium">🔐 #{a.id} · {a.tool_name}</div>
+                  <div className="text-[11px] text-[#75726b]">{saAgo(a.created_at)}</div>
+                </div>
+                <div className="font-serif text-[14.5px] leading-6 text-[#e5e2d9]"><SAMarkdown text={a.reason} /></div>
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs text-[#9b9890]">Exact action</summary>
+                  <pre className="font-mono text-[12px] bg-[#262624] border border-[#3d3d3a] rounded p-2 mt-1 overflow-auto max-h-72 whitespace-pre-wrap">
+                    {a.tool_input && typeof a.tool_input.sql === "string" ? a.tool_input.sql : saPretty(a.tool_input)}
+                  </pre>
+                </details>
+                <div className="flex gap-2 mt-3">
+                  <button className={btnPrimary} disabled={busy} onClick={() => decide(a.id, "approve")}>Approve &amp; run</button>
+                  <button className={btn} disabled={busy} onClick={() => decide(a.id, "reject")}>Reject</button>
+                </div>
               </div>
-              <div className="text-slate-300"><SAMarkdown text={a.reason} /></div>
-              <details className="mt-2">
-                <summary className="cursor-pointer text-xs text-slate-500">Exact action</summary>
-                <pre className="bg-slate-950 border border-slate-800 rounded p-2 mt-1 text-xs overflow-auto max-h-72 whitespace-pre-wrap">
-                  {a.tool_input && typeof a.tool_input.sql === "string" ? a.tool_input.sql : saPretty(a.tool_input)}
-                </pre>
-              </details>
-              <div className="flex gap-2 mt-3">
-                <button className={btnPrimary} disabled={busy} onClick={() => decide(a.id, "approve")}>Approve &amp; run</button>
-                <button className={btn} disabled={busy} onClick={() => decide(a.id, "reject")}>Reject</button>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 
       {tab === "health" && (
-        <div className="flex-1 overflow-y-auto p-4 space-y-5">
-          {loaded && !summary.health.full.length && !summary.health.quick.length && (
-            <div className="text-center text-slate-500 py-10">No health checks yet. Press “Run full check”.</div>
-          )}
-          {[["Quick monitor (every 15 min)", summary.health.quick], ["Full check", summary.health.full]].map(([label, rows]) => (
-            rows && rows.length > 0 ? (
-              <div key={label}>
-                <div className="text-xs text-slate-500 mb-1">{label} · {saAgo(rows[0].created_at)}</div>
-                <div className="divide-y divide-slate-800 border border-slate-800 rounded-lg bg-slate-900/40">
-                  {rows.slice().sort((x, y) => SA_STATUS_ORDER.indexOf(x.status) - SA_STATUS_ORDER.indexOf(y.status)).map((h) => (
-                    <div key={h.check_name} className="grid grid-cols-[1.5rem_1fr] md:grid-cols-[1.5rem_16rem_1fr] gap-2 px-3 py-2 text-sm">
-                      <span>{SA_STATUS_ICON[h.status]}</span>
-                      <span className="font-mono text-xs text-slate-300 break-all">{h.check_name.replace(/^rule:/, "")}</span>
-                      <span className="text-slate-400 col-start-2 md:col-start-auto">{h.summary}</span>
-                    </div>
-                  ))}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-5">
+            {!summary.health.full.length && !summary.health.quick.length && (
+              <div className="text-center text-[#9b9890] py-10">No health checks yet. Press “Run check now”.</div>
+            )}
+            {[["Quick monitor (every 15 min)", summary.health.quick], ["Full check", summary.health.full]].map(([label, rows]) => (
+              rows && rows.length > 0 ? (
+                <div key={label}>
+                  <div className="text-xs text-[#9b9890] mb-1">{label} · {saAgo(rows[0].created_at)}</div>
+                  <div className="divide-y divide-[#3d3d3a] border border-[#3d3d3a] rounded-lg bg-[#1f1e1d]">
+                    {rows.slice().sort((x, y) => SA_STATUS_ORDER.indexOf(x.status) - SA_STATUS_ORDER.indexOf(y.status)).map((h) => (
+                      <div key={h.check_name} className="grid grid-cols-[1.5rem_1fr] md:grid-cols-[1.5rem_16rem_1fr] gap-2 px-3 py-2 text-sm">
+                        <span>{SA_STATUS_ICON[h.status]}</span>
+                        <span className="font-mono text-xs text-[#d6d3ca] break-all">{h.check_name.replace(/^rule:/, "")}</span>
+                        <span className="text-[#a9a69e] col-start-2 md:col-start-auto">{h.summary}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : null
-          ))}
+              ) : null
+            ))}
+          </div>
         </div>
       )}
     </div>

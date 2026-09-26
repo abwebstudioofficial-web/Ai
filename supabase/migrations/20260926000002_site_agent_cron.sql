@@ -52,6 +52,7 @@ select cron.schedule(
   delete from public.agent_health_checks where created_at < now() - interval '30 days';
   delete from public.agent_audit_log     where created_at < now() - interval '180 days';
   delete from public.agent_ai_calls      where created_at < now() - interval '400 days';
+  delete from public.agent_notifications where created_at < now() - interval '365 days';
   update public.agent_approvals set status = 'expired'
     where status = 'pending' and created_at < now() - interval '7 days';
   $$

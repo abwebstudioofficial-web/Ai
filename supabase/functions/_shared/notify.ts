@@ -3,6 +3,7 @@
 // Channels without credentials are simply skipped.
 
 import { config, type Severity, severityAtLeast } from "./config.ts";
+import { db } from "./db.ts";
 
 export interface Notice {
   title: string;
@@ -100,11 +101,27 @@ async function sendWebhook(text: string): Promise<void> {
   }
 }
 
-/** Returns one status line per channel (useful for the agent and for logs). */
+/**
+ * Sends a message to the owners on every configured channel AND saves it, so the
+ * admin panel on the site shows exactly the same messages as Telegram.
+ * Returns one status line per channel (useful for the agent and for logs).
+ */
 export async function notifyOwners(n: Notice): Promise<string[]> {
+  const delivered = await deliver(n);
+  try {
+    await db()`
+      insert into public.agent_notifications (kind, severity, title, body, delivered)
+      values (${n.kind}, ${n.severity}, ${n.title}, ${n.body.trim()}, ${delivered})`;
+  } catch (e) {
+    console.error("saving notification failed", e);
+  }
+  return delivered;
+}
+
+async function deliver(n: Notice): Promise<string[]> {
   if (!n.force && !severityAtLeast(n.severity, config.notify.minSeverity)) {
     return [
-      `not sent: severity "${n.severity}" is below NOTIFY_MIN_SEVERITY (${config.notify.minSeverity}); visible in the dashboard`,
+      `not pushed: severity "${n.severity}" is below NOTIFY_MIN_SEVERITY (${config.notify.minSeverity}); shown on the site only`,
     ];
   }
   const text = formatNotice(n);
@@ -119,7 +136,7 @@ export async function notifyOwners(n: Notice): Promise<string[]> {
   if (c.twilioSid && c.twilioToken && c.twilioFrom && c.twilioTo.length) jobs.push(["sms/whatsapp", () => sendTwilio(text)]);
   if (c.webhookUrl) jobs.push(["webhook", () => sendWebhook(text)]);
 
-  if (jobs.length === 0) return ["no notification channels configured (dashboard only)"];
+  if (jobs.length === 0) return ["no phone/email channels configured (shown on the site only)"];
 
   const results = await Promise.allSettled(jobs.map(([, fn]) => fn()));
   return results.map((r, i) => {

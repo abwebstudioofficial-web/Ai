@@ -1,4 +1,4 @@
-// Processes agent runs in the background. Called by site-agent-chat, by itself
+// Answers questions sent to the Telegram bot, in the background. Called by site-agent-telegram, by itself
 // (to continue long runs) and by pg_cron's sweeper. Not callable from browsers:
 // requires the x-agent-secret header. Deploy with --no-verify-jwt.
 import { config } from "../_shared/config.ts";
