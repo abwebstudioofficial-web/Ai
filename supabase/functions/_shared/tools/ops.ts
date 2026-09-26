@@ -9,8 +9,9 @@ const SEVERITIES = ["info", "warning", "critical"] as const;
 
 const createAlert: AgentTool = {
   name: "create_alert",
-  description: "Raise an alert for an issue a human needs to look at (shows in the dashboard; warning/critical alerts are also " +
-    "sent to the team's phone/email). Use a stable dedupe_key so the same issue updates one alert instead of creating " +
+  description:
+    "Raise an alert for an issue a human needs to look at (listed in the morning report; warning/critical alerts are " +
+    "also sent to the team's phone/email right away). Use a stable dedupe_key so the same issue updates one alert instead of creating " +
     "duplicates, e.g. 'rule:orders_past_eta', 'site:assets-missing', 'order:ORD-123:late'. " +
     "Severity: critical = broken now / money or customers affected; warning = needs action within days; info = FYI.",
   input_schema: {

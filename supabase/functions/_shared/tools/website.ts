@@ -57,7 +57,7 @@ export async function checkUrl(
     }
     const check: FetchCheck & { body?: string } = {
       url,
-      final_url: res.url !== url ? res.url : undefined,
+      final_url: res.url && res.url !== url ? res.url : undefined,
       status: res.status,
       ok: res.ok,
       ms: Date.now() - started,
@@ -87,11 +87,14 @@ function attr(tag: string, name: string): string | undefined {
   return new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag)?.slice(1).find(Boolean);
 }
 
-export function extractLinks(html: string, base: string) {
+export function extractLinks(rawHtml: string, base: string) {
+  // Only real markup counts: drop the code inside inline <script> blocks (keeping the tags
+  // themselves for src=). Sites that compile JSX in the browser have <img src={photo}> in there.
+  const html = rawHtml.replace(/(<script\b[^>]*>)[\s\S]*?<\/script>/gi, "$1</script>");
   const resolve = (u: string | undefined) => {
     if (
       !u || u.startsWith("data:") || u.startsWith("#") || u.startsWith("mailto:") || u.startsWith("tel:") ||
-      u.startsWith("javascript:")
+      u.startsWith("javascript:") || u.startsWith("blob:") || /[{}]|\$\{/.test(u) // template / JSX placeholders
     ) return undefined;
     try {
       return new URL(u, base).toString();
@@ -149,7 +152,8 @@ export async function scanSite(baseUrl: string, extraPaths: string[] = [], maxPa
   const pageUrls = new Set<string>();
   for (const p of [...config.siteKeyPaths, ...extraPaths]) {
     try {
-      pageUrls.add(new URL(p, baseUrl + "/").toString());
+      // Paths are relative to the site URL, even with a leading "/" (GitHub Pages sites live in a sub-folder).
+      pageUrls.add(new URL(p.replace(/^\/+/, ""), baseUrl + "/").toString());
     } catch { /* ignore bad paths */ }
   }
   const sitemap = await checkUrl(`${baseUrl}/sitemap.xml`, { keepBody: true, timeoutMs: 10_000 });

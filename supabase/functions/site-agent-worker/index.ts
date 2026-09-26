@@ -5,6 +5,7 @@ import { config } from "../_shared/config.ts";
 import { background, hasInternalSecret, json } from "../_shared/http.ts";
 import { processRun } from "../_shared/agent.ts";
 import { findRunsToSweep, kickWorker } from "../_shared/runs.ts";
+import { ensureSettings } from "../_shared/settings.ts";
 
 // The wall-clock limit applies to the whole worker instance, which may serve
 // several requests - so measure from when this instance booted.
@@ -13,6 +14,7 @@ const deadline = () => BOOTED_AT + config.wallClockMs - 10_000;
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
+  await ensureSettings();
   if (!hasInternalSecret(req)) return json({ error: "forbidden" }, 403);
 
   const body = await req.json().catch(() => ({})) as { run_id?: string; sweep?: boolean };

@@ -46,6 +46,21 @@ async function post(url: string, init: RequestInit): Promise<void> {
   await res.body?.cancel();
 }
 
+/** Calls a Telegram Bot API method and returns its `result` (throws on errors). */
+export async function telegramApi<T = unknown>(method: string, body: Record<string, unknown> = {}): Promise<T> {
+  const token = config.notify.telegramBotToken;
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8_000),
+  });
+  const data = await res.json().catch(() => ({})) as { ok?: boolean; result?: T; description?: string };
+  if (!data.ok) throw new Error(`Telegram ${method}: ${data.description ?? res.status}`);
+  return data.result as T;
+}
+
 export async function sendTelegram(chatId: string, text: string): Promise<void> {
   const token = config.notify.telegramBotToken;
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
@@ -68,9 +83,10 @@ async function sendEmail(subject: string, text: string): Promise<void> {
       to: n.emailTo,
       subject,
       text,
-      html: `<pre style="font-family:ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;font-size:14px">${
-        text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      }</pre>`,
+      html:
+        `<div style="font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;white-space:pre-wrap;font-size:15px;line-height:1.5;color:#1f2937">${
+          text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        }</div>`,
     }),
   });
 }
@@ -78,7 +94,7 @@ async function sendEmail(subject: string, text: string): Promise<void> {
 async function sendTwilio(text: string): Promise<void> {
   const n = config.notify;
   // SMS / WhatsApp bodies are limited to 1600 characters.
-  const body = text.length > 1500 ? `${text.slice(0, 1450)}\n…(full text in the dashboard)` : text;
+  const body = text.length > 1500 ? `${text.slice(0, 1450)}\n…(shortened; full text on Telegram)` : text;
   const auth = btoa(`${n.twilioSid}:${n.twilioToken}`);
   for (const to of n.twilioTo) {
     await post(`https://api.twilio.com/2010-04-01/Accounts/${n.twilioSid}/Messages.json`, {
@@ -102,8 +118,8 @@ async function sendWebhook(text: string): Promise<void> {
 }
 
 /**
- * Sends a message to the owners on every configured channel AND saves it, so the
- * admin panel on the site shows exactly the same messages as Telegram.
+ * Sends a message to the owners on every configured channel AND saves it in
+ * agent_notifications (a log of everything sent, which the chat agent can read).
  * Returns one status line per channel (useful for the agent and for logs).
  */
 export async function notifyOwners(n: Notice): Promise<string[]> {
@@ -121,7 +137,7 @@ export async function notifyOwners(n: Notice): Promise<string[]> {
 async function deliver(n: Notice): Promise<string[]> {
   if (!n.force && !severityAtLeast(n.severity, config.notify.minSeverity)) {
     return [
-      `not pushed: severity "${n.severity}" is below NOTIFY_MIN_SEVERITY (${config.notify.minSeverity}); shown on the site only`,
+      `not pushed: severity "${n.severity}" is below NOTIFY_MIN_SEVERITY (${config.notify.minSeverity}); not sent now (it is listed in the morning report)`,
     ];
   }
   const text = formatNotice(n);
@@ -136,7 +152,7 @@ async function deliver(n: Notice): Promise<string[]> {
   if (c.twilioSid && c.twilioToken && c.twilioFrom && c.twilioTo.length) jobs.push(["sms/whatsapp", () => sendTwilio(text)]);
   if (c.webhookUrl) jobs.push(["webhook", () => sendWebhook(text)]);
 
-  if (jobs.length === 0) return ["no phone/email channels configured (shown on the site only)"];
+  if (jobs.length === 0) return ["not sent: no Telegram/email channel is configured yet"];
 
   const results = await Promise.allSettled(jobs.map(([, fn]) => fn()));
   return results.map((r, i) => {

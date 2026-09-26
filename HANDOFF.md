@@ -1,9 +1,11 @@
-# Site Agent: wiring guide
+# Site Agent: setup guide
 
-**For the Claude session that connects Site Agent to LogistiX.** Read this whole file before you start. Every step below follows the owner's project rules.
+**Site Agent runs only in the background** (scheduled checks, messages by **email** to the developer only). It adds nothing to the LogistiX website. Read this whole file before changing anything. Every step below follows the owner's project rules.
 
-- Code: this repo (`abwebstudioofficial-web/ai`), folder `supabase/` and file `web/SiteAgentPanel.jsx`
-- Site: `abwebstudioofficial-web/logistix` (GitHub Pages, so anything merged into `main` goes live)
+**Status (26 Sept 2026): set up and live.** Steps 2 to 6 are done. Email (step 7) is waiting for the developer's Resend API key.
+
+- Code: this repo (`abwebstudioofficial-web/ai`), folder `supabase/`
+- Site it watches: `abwebstudioofficial-web/logistix` (GitHub Pages). Site Agent never changes it unless the owner approves a pull request.
 - Supabase project: `zonuxfqvyxhfkimdahkb`
 
 ---
@@ -21,7 +23,7 @@
    - Keep hooks above early returns.
    - Keep `SortTh` at module scope.
 
-   The panel already respects all of these.
+   Site Agent's own fix pull requests (step 8) follow these too.
 
 ## 1. What's in this repo
 
@@ -29,13 +31,12 @@
 |---|---|
 | `supabase/migrations/20260926000001_site_agent_schema.sql` | New `agent_*` tables (including the `agent_ai_calls` cost ledger), RLS (admins read-only from the browser), helper functions, the `agent_container_view` view, starter watch rules and memory notes. **Does not alter any existing table.** Safe to re-run. |
 | `supabase/migrations/20260926000002_site_agent_cron.sql` | 4 **new** pg_cron jobs: the 08:00 PKT rule-based morning report, a 15-minute monitor, a 1-minute sweeper and daily housekeeping. **Ask the owner before applying (rule 5).** |
-| `supabase/functions/site-agent-api` | The site panel's API: the message thread, alerts, health and approvals. Admin-only, verifies the user's session. Never calls Claude, except "Run check now" when it finds a new problem (one Haiku call). |
+| `supabase/migrations/20260926000003_site_agent_no_dashboard_link.sql` | Removes the "Open dashboard" link setting (there is no Site Agent page). |
 | `supabase/functions/site-agent-worker` | Only used if someone sends the Telegram bot a question: answers with Claude Sonnet 5 in the background (chunked, so it never hits the Edge Function time limit). |
 | `supabase/functions/site-agent-cron` | Entry point for the scheduled jobs. Rule-based: no AI unless a check finds a NEW problem, then one Claude Haiku call. |
 | `supabase/functions/site-agent-telegram` | Optional: Telegram commands (/check, /alerts, /cost, /approve...) and optional questions. |
-| `supabase/functions/_shared/` | Checks and report (`checks.ts`, `report.ts`, `jobs.ts`), the Haiku explanation (`explain.ts`), the budget cap (`ai_cost.ts`), notifications (saved to `agent_notifications` for the site and sent to Telegram), the question agent, tools, SQL safety guard. |
-| `web/SiteAgentPanel.jsx` | The site page: every Site Agent message as a Claude-style chat thread (streams in like Claude), plus Alerts / Health / Approvals tabs. No question box. Written to paste straight into `index.html`. |
-| `.env.example` | Every secret/setting, with explanations. |
+| `supabase/functions/_shared/` | Checks and report (`checks.ts`, `report.ts`, `jobs.ts`), the Haiku explanation (`explain.ts`), the budget cap (`ai_cost.ts`), notifications (sent to Telegram and logged in `agent_notifications`), the question agent, tools, SQL safety guard. |
+| `.env.example` | Every setting, with explanations. Normally you set these in the database instead (step 3). |
 
 ## 2. Apply the schema migration
 
@@ -54,49 +55,50 @@ select stage_name, count(*) from public.agent_container_view group by 1;    -- m
 select public.agent_is_admin(id) from public.profiles where role = 'admin'; -- true
 ```
 
-## 3. Set the Edge Function secrets
+## 3. Settings and secrets (no Edge Function secrets needed)
 
-Copy `.env.example` to `site-agent.env` and fill it in. **Don't commit the filled-in file.** At minimum set:
+Site Agent reads its configuration from the database, so nothing has to be set on the Edge Functions page:
 
-- `ANTHROPIC_API_KEY`: the project may already have this secret, since the research assistant uses it. It's shared by all functions, so keep it.
-- `AGENT_INTERNAL_SECRET`: generate with `openssl rand -hex 32`
-- `SITE_URL`: the live GitHub Pages URL, no trailing slash
-- `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_IDS`: the morning report goes here (see step 8)
-- `AGENT_WALL_CLOCK_MS`: `150000` on the free plan, `400000` on Pro
+- **Plain settings** live in `public.agent_settings`. The schema migration already seeds `site_url`, `site_key_paths`, `github_repo`, `timezone` and `telegram_chat_ids`. `email_to` holds the developer's email address (only the first address is used). Optional keys are `email_from`, `notify_min_severity`, `ai_monthly_budget_usd`, `ai_explain_problems` (true/false) and `autonomy`.
+- **Secrets** live in **Supabase Vault**, with names starting with `site_agent_`:
 
-Leave the cost settings at their defaults unless the owner says otherwise:
+| Vault secret | Who creates it |
+|---|---|
+| `site_agent_internal_secret` | Generated by the schema migration. Nobody ever needs to see it. |
+| `site_agent_telegram_webhook_secret` | Generated by the schema migration |
+| `site_agent_project_url` | You, once: `select vault.create_secret('https://zonuxfqvyxhfkimdahkb.supabase.co', 'site_agent_project_url');` |
+| `site_agent_resend_api_key` | The developer: the Resend API key for email (step 7) |
+| `site_agent_telegram_bot_token` | Optional: a Telegram bot token (step 7) |
+| `site_agent_anthropic_api_key` | Optional. Only needed if the project has no `ANTHROPIC_API_KEY` function secret. |
+| `site_agent_github_token`, `site_agent_supabase_pat` | Optional (step 8) |
+| `site_agent_telegram_claim_code` | Created and deleted automatically: the one-time Telegram connect link |
 
-- `AI_AUTO_MODEL=claude-haiku-4-5`
-- `AI_MONTHLY_BUDGET_USD=5`
-- `AGENT_MODEL=claude-sonnet-5` with `AGENT_EFFORT=medium` (only used if someone asks the Telegram bot a question)
+An Edge Function secret with the same meaning (`ANTHROPIC_API_KEY`, `SITE_URL`, `TELEGRAM_BOT_TOKEN`, see `.env.example`) always wins over the database. Telegram chats connected with a link are added to any `TELEGRAM_CHAT_IDS` secret.
 
-Then run:
+The cost settings stay at their defaults unless the owner says otherwise: Haiku for automatic explanations, a US$5 monthly cap, and Sonnet 5 (effort medium) only for questions asked on Telegram.
 
-```bash
-supabase secrets set --project-ref zonuxfqvyxhfkimdahkb --env-file ./site-agent.env
+**Check the setup at any time** (it never shows secret values):
+
+```sql
+select public.agent_invoke('site-agent-cron', '{"job":"status"}');     -- returns a request id
+select status_code, content from net._http_response where id = <that id>;
 ```
 
 ## 4. Deploy the functions
 
 ```bash
-supabase functions deploy site-agent-api      --project-ref zonuxfqvyxhfkimdahkb
-supabase functions deploy site-agent-worker   --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
 supabase functions deploy site-agent-cron     --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
-supabase functions deploy site-agent-telegram --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt   # optional
+supabase functions deploy site-agent-worker   --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
+supabase functions deploy site-agent-telegram --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
 ```
 
-Why `--no-verify-jwt` is safe for these: worker and cron check the `x-agent-secret` header themselves, and telegram checks Telegram's secret token. `site-agent-api` keeps JWT verification and also checks that the user is an admin.
+Why `--no-verify-jwt` is safe for these: worker and cron check the `x-agent-secret` header themselves, and telegram checks Telegram's secret token. None of them can be used from a browser.
 
-If the project has a `supabase/config.toml`, the equivalent is `[functions.site-agent-worker] verify_jwt = false`, and the same for cron and telegram.
+How they are deployed now: each live function is a one-line `index.ts` that imports this repo's code from a **pinned commit** (`https://raw.githubusercontent.com/abwebstudioofficial-web/Ai/<commit>/supabase/functions/<name>/index.ts`). Supabase bundles it at deploy time. To update, deploy the same one-liner with the new commit id.
 
-## 5. Vault secrets for the scheduler
+## 5. Vault secret for the scheduler
 
-The owner must do this, or explicitly approve it. It's configuration, not a schema change. In the Dashboard, go to **Project Settings → Vault → Add new secret** and add:
-
-| Name | Value |
-|---|---|
-| `site_agent_project_url` | `https://zonuxfqvyxhfkimdahkb.supabase.co` |
-| `site_agent_internal_secret` | same value as `AGENT_INTERNAL_SECRET` |
+Only `site_agent_project_url` is needed (see step 3). The migration already generated `site_agent_internal_secret`, which both the scheduler and the functions read from Vault.
 
 ## 6. Schedules: ask the owner first
 
@@ -111,62 +113,47 @@ The owner must do this, or explicitly approve it. It's configuration, not a sche
 
 It does **not** touch the three existing jobs. Once the owner says yes, apply it as a migration (name `site_agent_cron`).
 
-## 7. Add the panel to `index.html` (one small PR)
+## 7. Messages: email (the developer only)
 
-1. Pull the latest `main`, then create branch `maint/site-agent-panel`.
-2. Add to `WORKING_ON.md`: `- Site Agent panel: adding SiteAgentPanel block after the icon set, NAV_ITEMS entry, VIEW_TITLES entry, admin-only nav filter, view route (branch maint/site-agent-panel)`
-3. Make these **5 edits** in `index.html`. Line numbers are from `main` @ `00589e0` (after the research assistant was merged), so search for the text rather than trusting the numbers.
+**Site Agent has exactly one recipient: the developer.** Messages go by email through [Resend](https://resend.com) (free: 3,000 emails a month). Without your own domain, Resend sends from `onboarding@resend.dev`, and only to the address the Resend account was created with. That's exactly what's needed here.
 
-   **a) Paste the panel.** Put the whole content of `web/SiteAgentPanel.jsx` inside the `<script type="text/babel">` block at module scope, right before `const FLEET_LINK_KEY = "logistix-fleet-url";` (~line 487, after the icon set).
-   - It uses `React.useState` etc., because `index.html` already destructures the hooks at the top.
-   - All its names are prefixed `SiteAgent*` / `SA*` / `sa*`. I verified that it compiles together with `index.html` @ `00589e0` under the page's `@babel/standalone@7.23.10`, with no name clashes.
-   - It's separate from the floating ✦ Research assistant (`research-agent.js`): leave that as it is.
-
-   **b) Nav item.** In `NAV_ITEMS` (~line 489), add before the `settings` entry:
-   ```js
-   { key: "site_agent", label: "Site Agent", icon: SiteAgentIcon },
+1. The developer signs up at resend.com, then goes to **API Keys → Create API Key** (permission: *Sending access*) and copies the key (`re_...`).
+2. Store the key and the address (the same email the Resend account uses):
+   ```sql
+   select vault.create_secret('<re_... key>', 'site_agent_resend_api_key');
+   insert into public.agent_settings (key, value) values ('email_to', '["<developer email>"]')
+     on conflict (key) do update set value = excluded.value, updated_at = now();
    ```
-
-   **c) Title.** In `VIEW_TITLES` (~line 625), add:
-   ```js
-   site_agent: "Site Agent",
+3. Send a test email:
+   ```sql
+   select public.agent_invoke('site-agent-cron', '{"job":"test_message"}');
+   select content from net._http_response where id = <that id>;   -- {"delivered":["email: sent"]}
    ```
+   If it says `FAILED (403 ... your own email address)`, `email_to` isn't the Resend account's email.
 
-   **d) Admin only.** In the sidebar nav filter (~line 3791), change
-   ```js
-   if (item.key === "users" || item.key === "activity_log" || item.key === "order_history") return session.role === "admin";
+What arrives: the **morning report** at 08:00 PKT, an **alert** when something new breaks (each problem once, with the failing page, job or rows to fix), and **✅ Recovered** when it's fixed. Warnings and critical problems are emailed right away; info-level items only appear in the morning report.
+
+### Optional: Telegram (two-way: `/check`, `/approve`, questions)
+
+**Site Agent has exactly one recipient: the developer.** Only one Telegram chat can ever be connected, it must be a private chat (not a group), and everyone else who messages the bot just gets "This is a private bot."
+
+Not used at the moment (Telegram didn't open for the developer). If it's wanted later:
+
+1. The developer creates a bot with **@BotFather** (`/newbot`) and stores the token:
+   ```sql
+   select vault.create_secret('<token from BotFather>', 'site_agent_telegram_bot_token');
    ```
-   to
-   ```js
-   if (item.key === "users" || item.key === "activity_log" || item.key === "order_history" || item.key === "site_agent") return session.role === "admin";
+2. Connect the bot. This registers the webhook with the generated secret, sets the command menu and creates a one-time connect link:
+   ```sql
+   select public.agent_invoke('site-agent-cron', '{"job":"telegram_setup"}');
+   select content from net._http_response where id = <that id>;   -- {"connect_link": "https://t.me/<bot>?start=..."}
    ```
-   As of `00589e0` this is the only place the nav is filtered.
+3. The developer opens the link on their phone and presses **Start**. That chat becomes the only one in `agent_settings.telegram_chat_ids`, the link stops working, and from then on `telegram_setup` refuses to make new links.
+4. To move to a new phone or chat: `update public.agent_settings set value = '[]' where key = 'telegram_chat_ids';`, then run step 2 again.
 
-   **e) Route.** Next to the other admin-only views (~line 11352, after the `users` line), add:
-   ```jsx
-   {view === "site_agent" && viewSession.role === "admin" && (
-     <SiteAgentPanel client={supabaseClient} supabaseUrl={SUPABASE_URL} anonKey={SUPABASE_ANON_KEY} />
-   )}
-   ```
+Commands: `/check` `/alerts` `/approvals` `/approve <id>` `/reject <id>` `/cost` `/stop` `/new`. Anything else is a question to the agent.
 
-4. Pull `main` again. If it moved, rebase and resolve carefully. Then push the branch, open the PR and summarise the 5 touched spots.
-5. After the owner merges, remove your line from `WORKING_ON.md` (in a follow-up PR).
-
-## 8. Telegram (messages on the phone)
-
-1. Create a bot with **@BotFather**, then set `TELEGRAM_BOT_TOKEN`.
-2. Set `TELEGRAM_WEBHOOK_SECRET` to a random string: `openssl rand -hex 24`.
-3. Register the webhook:
-   ```bash
-   curl "https://api.telegram.org/bot<TOKEN>/setWebhook" \
-     -d "url=https://zonuxfqvyxhfkimdahkb.supabase.co/functions/v1/site-agent-telegram" \
-     -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
-   ```
-4. The owner messages the bot. It replies with their chat id. Put it in `TELEGRAM_CHAT_IDS` (comma-separated for several people) and re-set the secrets.
-
-Commands: `/check` `/alerts` `/approvals` `/approve <id>` `/reject <id>` `/stop` `/new`. Anything else is a question to the agent.
-
-## 9. Optional: code access (fix pull requests)
+## 8. Optional: code access (fix pull requests)
 
 Create a **fine-grained GitHub token** limited to `abwebstudioofficial-web/logistix` with:
 
@@ -183,20 +170,17 @@ What the agent does with it:
 - Checks `WORKING_ON.md` and open PRs first.
 - Opens a PR. It cannot merge.
 
-## 10. Smoke test
+## 9. Smoke test
 
-1. Log in as an admin, open **Site Agent**, and press **Run check now**. Within a minute:
-   - The morning report streams into the message thread, Claude-style.
-   - The same report arrives on Telegram.
-   - The header shows "AI this month $0.00 / $5.00". No AI is used unless a check finds a new problem.
-2. Expected first findings, based on the data at setup:
+1. Run the `status` job (step 3). Expect `secrets.AGENT_INTERNAL_SECRET: "vault"` and `anthropic_key_works: true`. After step 7 you should also see `email.configured: true`.
+2. Run `select public.agent_invoke('site-agent-cron', '{"job":"daily"}');`. Within a minute the full report arrives by email.
+3. Expected findings, based on the data at setup:
    - FYI: ~1,524 containers still at "Confirmed" months after their loading date. This is info only, with no AI call.
-   - Needs action: 1 overdue invoice. It's new, so it gets one Haiku explanation (about half a US cent), shown under "🤖 About the new problems".
+   - Keep an eye on: 1 overdue invoice. It's new, so it gets one Haiku explanation (about half a US cent), if the Claude account has credit.
    - No late orders.
-3. Press **Run check now** again. The same problems now show "(open since …)" with no new AI call. Check with `select count(*) from agent_ai_calls;` (still 1).
-4. Leave the page open. New messages appear on their own within 15 seconds and write themselves out.
+4. Run it again. The same problems now show "(open since …)" with no new AI call.
 
-## 11. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -204,11 +188,11 @@ What the agent does with it:
 | Runs pause for about a minute between steps | Normal on the free plan: each worker gets 150s, and the sweeper continues the run. On Pro, set `AGENT_WALL_CLOCK_MS=400000`. |
 | "This month's AI budget ... is used up" | Raise `AI_MONTHLY_BUDGET_USD`. Checks, reports and alerts keep working without AI in the meantime. |
 | Want zero automatic AI calls | Set `AI_EXPLAIN_PROBLEMS=false`. Reports and alerts still arrive, just without the explanation. |
-| Morning report never arrives | Check `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_IDS`, the Vault secrets, then `select * from cron.job_run_details where jobid in (select jobid from cron.job where jobname like 'site-agent-%') order by start_time desc limit 20;`, then the function logs. |
-| Panel says "Only admins can use Site Agent" | The user needs `profiles.role = 'admin'`, or a row in `public.agent_admins`. |
-| No messages on phone | At least one notification channel must be configured (see `.env.example`). Alerts below `NOTIFY_MIN_SEVERITY` are shown on the site only. Every message is always on the site. |
+| "The Claude account has no credit left" | Add credit at console.anthropic.com → Plans & Billing, or set `ai_explain_problems` to `false` in `agent_settings`. |
+| Morning report never arrives | Run the `status` job (step 3), then `select * from cron.job_run_details where jobid in (select jobid from cron.job where jobname like 'site-agent-%') order by start_time desc limit 20;`, then the function logs. |
+| No emails | Run the `test_message` job and read its `delivered` result. Check the spam folder too. Alerts below `NOTIFY_MIN_SEVERITY` are not pushed; they are listed in the morning report. |
 
-## 12. Local checks you can re-run
+## 11. Local checks you can re-run
 
 ```bash
 deno test --allow-env supabase/functions/_shared/       # SQL guard + code-edit unit tests
