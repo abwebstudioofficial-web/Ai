@@ -5,7 +5,7 @@ import { Anthropic } from "./deps.ts";
 import { config } from "./config.ts";
 import { toJson } from "./db.ts";
 import type { CheckResult } from "./checks.ts";
-import { budgetBlock, recordAiCall } from "./ai_cost.ts";
+import { budgetBlock, friendlyAiError, recordAiCall } from "./ai_cost.ts";
 import { memoryNotes, nowText } from "./prompt.ts";
 
 const SYSTEM = `You are the on-call assistant for LogistiX, a logistics company's web app on Supabase.
@@ -71,6 +71,6 @@ export async function explainProblems(problems: CheckResult[], source: string): 
     return { text, perCheck, costUsd };
   } catch (e) {
     console.error("explainProblems failed", e);
-    return { ...none, skippedReason: `AI explanation failed: ${e instanceof Error ? e.message : String(e)}` };
+    return { ...none, skippedReason: `AI explanation failed: ${friendlyAiError(e)}` };
   }
 }

@@ -87,11 +87,14 @@ function attr(tag: string, name: string): string | undefined {
   return new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag)?.slice(1).find(Boolean);
 }
 
-export function extractLinks(html: string, base: string) {
+export function extractLinks(rawHtml: string, base: string) {
+  // Only real markup counts: drop the code inside inline <script> blocks (keeping the tags
+  // themselves for src=). Sites that compile JSX in the browser have <img src={photo}> in there.
+  const html = rawHtml.replace(/(<script\b[^>]*>)[\s\S]*?<\/script>/gi, "$1</script>");
   const resolve = (u: string | undefined) => {
     if (
       !u || u.startsWith("data:") || u.startsWith("#") || u.startsWith("mailto:") || u.startsWith("tel:") ||
-      u.startsWith("javascript:")
+      u.startsWith("javascript:") || u.startsWith("blob:") || /[{}]|\$\{/.test(u) // template / JSX placeholders
     ) return undefined;
     try {
       return new URL(u, base).toString();

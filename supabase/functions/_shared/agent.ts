@@ -8,7 +8,7 @@ import { db, errorMessage } from "./db.ts";
 import { apiTools, executeTool } from "./tools/index.ts";
 import { buildSystem } from "./prompt.ts";
 import { sendTelegram } from "./notify.ts";
-import { budgetBlock, recordAiCall } from "./ai_cost.ts";
+import { budgetBlock, friendlyAiError, recordAiCall } from "./ai_cost.ts";
 import {
   claimRun,
   finishRun,
@@ -239,7 +239,7 @@ export async function processRun(runId: string, deadline: number): Promise<"done
       return "yielded";
     }
     await finishRun(run.id, "error", null, msg);
-    await onRunFailed(run, msg);
+    await onRunFailed(run, friendlyAiError(e));
     return "done";
   }
 }
