@@ -102,7 +102,7 @@ export async function runMonitor(): Promise<{ results: CheckResult[]; newProblem
 
 /**
  * 08:00: full checks -> alerts -> (Haiku only for new problems) -> report sent to
- * Telegram/email/... and saved, so it also appears in the message thread on the site.
+ * Telegram/email/... and saved in agent_notifications.
  */
 export async function runDailyCheck(): Promise<{ report: string }> {
   const results = await runChecks("full");

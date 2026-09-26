@@ -71,7 +71,6 @@ export async function setupStatus(): Promise<Record<string, unknown>> {
   return {
     site_url: config.siteUrl || null,
     site_key_paths: config.siteKeyPaths,
-    dashboard_url: config.notify.dashboardUrl || null,
     secrets: { ...secretSources },
     anthropic_key_works: anthropicOk,
     telegram: { ...telegram, connected_chats: config.notify.telegramChatIds.length, unused_connect_code: claim.n > 0 },
