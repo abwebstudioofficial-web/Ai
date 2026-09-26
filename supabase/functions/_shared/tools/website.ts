@@ -57,7 +57,7 @@ export async function checkUrl(
     }
     const check: FetchCheck & { body?: string } = {
       url,
-      final_url: res.url !== url ? res.url : undefined,
+      final_url: res.url && res.url !== url ? res.url : undefined,
       status: res.status,
       ok: res.ok,
       ms: Date.now() - started,
@@ -149,7 +149,8 @@ export async function scanSite(baseUrl: string, extraPaths: string[] = [], maxPa
   const pageUrls = new Set<string>();
   for (const p of [...config.siteKeyPaths, ...extraPaths]) {
     try {
-      pageUrls.add(new URL(p, baseUrl + "/").toString());
+      // Paths are relative to the site URL, even with a leading "/" (GitHub Pages sites live in a sub-folder).
+      pageUrls.add(new URL(p.replace(/^\/+/, ""), baseUrl + "/").toString());
     } catch { /* ignore bad paths */ }
   }
   const sitemap = await checkUrl(`${baseUrl}/sitemap.xml`, { keepBody: true, timeoutMs: 10_000 });

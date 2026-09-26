@@ -1,11 +1,10 @@
 -- =============================================================================
 -- Site Agent: schedules (pg_cron)
 -- =============================================================================
--- BEFORE running this migration, store two secrets in Supabase Vault
--- (SQL editor, run once - replace the placeholders):
+-- BEFORE running this migration, store the project URL in Supabase Vault
+-- (SQL editor, run once; the schema migration already generated site_agent_internal_secret):
 --
 --   select vault.create_secret('https://<project-ref>.supabase.co', 'site_agent_project_url');
---   select vault.create_secret('<same value as the AGENT_INTERNAL_SECRET function secret>', 'site_agent_internal_secret');
 --
 -- All times are UTC. 03:00 UTC = 08:00 in Pakistan (Asia/Karachi, UTC+5).
 -- To move the morning check, change '0 3 * * *' below (e.g. '0 2 * * *' = 07:00 PKT).

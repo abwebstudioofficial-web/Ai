@@ -1,4 +1,4 @@
-// Run with:  deno test supabase/functions/_shared/tools/github_test.ts
+// Run with:  deno test --allow-env supabase/functions/_shared/tools/github_test.ts
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { applyEdits } from "./github.ts";
 

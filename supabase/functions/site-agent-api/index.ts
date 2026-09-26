@@ -18,12 +18,14 @@ import { monthToDateUsd } from "../_shared/ai_cost.ts";
 import { setAlertStatus } from "../_shared/alerts.ts";
 import { db, errorMessage } from "../_shared/db.ts";
 import { config } from "../_shared/config.ts";
+import { ensureSettings } from "../_shared/settings.ts";
 
 const PAGE = 40;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
+  await ensureSettings();
 
   const user = await getUser(req);
   if (!user) return json({ error: "Please sign in." }, 401);

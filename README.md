@@ -83,7 +83,7 @@ You or the agent can add more rules at any time.
 - It never touches your existing Edge Functions or cron jobs. Anything involving cron, logins or storage always needs your approval.
 - It can't read server files, switch database roles, or approve its own requests. Every action is recorded in an audit log.
 
-Once you trust it more, `AGENT_AUTONOMY` can be relaxed to `standard` or `full`; see `.env.example`.
+Once you trust it more, the `autonomy` setting (in `agent_settings`) can be relaxed to `standard` or `full`; see `.env.example`.
 
 ## How it works
 

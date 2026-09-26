@@ -46,6 +46,21 @@ async function post(url: string, init: RequestInit): Promise<void> {
   await res.body?.cancel();
 }
 
+/** Calls a Telegram Bot API method and returns its `result` (throws on errors). */
+export async function telegramApi<T = unknown>(method: string, body: Record<string, unknown> = {}): Promise<T> {
+  const token = config.notify.telegramBotToken;
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8_000),
+  });
+  const data = await res.json().catch(() => ({})) as { ok?: boolean; result?: T; description?: string };
+  if (!data.ok) throw new Error(`Telegram ${method}: ${data.description ?? res.status}`);
+  return data.result as T;
+}
+
 export async function sendTelegram(chatId: string, text: string): Promise<void> {
   const token = config.notify.telegramBotToken;
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
