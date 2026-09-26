@@ -78,25 +78,30 @@ export async function ensureSettings(force = false): Promise<void> {
   }
 }
 
-/** Adds a Telegram chat to the list that receives messages (used by the connection code). */
-export async function addTelegramChat(chatId: string): Promise<void> {
+/**
+ * Makes `chatId` THE Telegram chat that receives Site Agent messages - only if no chat is
+ * connected yet (Site Agent has exactly one recipient: the developer). Returns false otherwise.
+ */
+export async function connectOwnerChat(chatId: string): Promise<boolean> {
   const sql = db();
-  await sql.begin(async (tx) => {
+  const connected = await sql.begin(async (tx) => {
     const [row] = await tx<{ value: unknown }[]>`
       select value from public.agent_settings where key = 'telegram_chat_ids' for update`;
-    const ids = [...new Set([...list(row?.value), chatId])];
+    if (list(row?.value).length > 0) return false;
     await tx`
-      insert into public.agent_settings (key, value) values ('telegram_chat_ids', ${tx.json(ids)})
+      insert into public.agent_settings (key, value) values ('telegram_chat_ids', ${tx.json([chatId])})
       on conflict (key) do update set value = excluded.value, updated_at = now()`;
+    return true;
   });
   await ensureSettings(true);
+  return connected;
 }
 
 const CLAIM_SECRET = "site_agent_telegram_claim_code";
 
 /**
- * Creates a new one-time connection code (replacing any unused one). Whoever sends it to the
- * bot ("/start <code>", or opening https://t.me/<bot>?start=<code>) gets that chat connected.
+ * Creates a new one-time connection code (replacing any unused one). Opening
+ * https://t.me/<bot>?start=<code> in a private chat connects that chat - while no chat is connected.
  */
 export async function newTelegramClaimCode(): Promise<string> {
   const code = crypto.randomUUID().replace(/-/g, "");

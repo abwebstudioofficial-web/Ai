@@ -16,7 +16,6 @@ const COMMANDS = [
   ["alerts", "Open alerts"],
   ["approvals", "Requests waiting for you"],
   ["cost", "AI spend this month"],
-  ["invite", "Link to connect another person"],
   ["new", "Start a fresh conversation"],
   ["stop", "Stop what the agent is doing"],
   ["help", "All commands"],
@@ -89,7 +88,10 @@ export async function setupStatus(): Promise<Record<string, unknown>> {
   };
 }
 
-/** Points the Telegram bot at site-agent-telegram and returns a one-time link to connect a chat. */
+/**
+ * Points the Telegram bot at site-agent-telegram and, while no chat is connected yet, returns a
+ * one-time link that connects the developer's chat (the only chat that ever gets messages).
+ */
 export async function setupTelegram(): Promise<Record<string, unknown>> {
   if (!config.notify.telegramBotToken) {
     return { error: "No bot token. Store it in Vault as site_agent_telegram_bot_token (see HANDOFF.md)." };
@@ -105,15 +107,20 @@ export async function setupTelegram(): Promise<Record<string, unknown>> {
     drop_pending_updates: true,
   });
   await telegramApi("setMyCommands", { commands: COMMANDS });
+  if (config.notify.telegramChatIds.length > 0) {
+    return {
+      bot: `@${me.username}`,
+      webhook: telegramWebhookUrl(),
+      connected: true,
+      note: "Already connected to your chat - nobody else can connect. To move to a new phone/chat, set " +
+        "telegram_chat_ids to [] in agent_settings and run this job again.",
+    };
+  }
   const code = config.notify.telegramClaimCode || await newTelegramClaimCode();
   return {
     bot: `@${me.username}`,
     webhook: telegramWebhookUrl(),
     connect_link: `https://t.me/${me.username}?start=${code}`,
-    note: "The link works once. Send /invite in a connected chat for a new one.",
+    note: "Open it on your phone (private chat). It works once; after that nobody else can connect.",
   };
-}
-
-export async function botUsername(): Promise<string> {
-  return (await telegramApi<{ username: string }>("getMe")).username;
 }

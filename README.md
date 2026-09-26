@@ -3,7 +3,7 @@
 A near-zero-cost operations assistant for LogistiX. It lives inside your Supabase project:
 
 - It works only in the background: it checks the website and the database on a schedule and alerts you the moment something new breaks.
-- Every message goes to **Telegram**. Nothing is added to the website itself.
+- Every message goes to **one person only, the developer, on Telegram** (a private bot nobody else can connect to). Nothing is added to the website itself.
 
 **The scheduled checks use no AI at all.** They are plain database queries and HTTP checks. The only automatic AI use is when a check finds a **NEW** problem: then one short call to **Claude Haiku** explains it and suggests a fix, once per problem. A day with no new problems makes **zero** AI calls.
 

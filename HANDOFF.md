@@ -112,9 +112,11 @@ Only `site_agent_project_url` is needed (see step 3). The migration already gene
 
 It does **not** touch the three existing jobs. Once the owner says yes, apply it as a migration (name `site_agent_cron`).
 
-## 7. Telegram (messages on the phone)
+## 7. Telegram (messages on the developer's phone)
 
-1. The owner creates a bot with **@BotFather** (`/newbot`) and stores the token:
+**Site Agent has exactly one recipient: the developer.** Only one Telegram chat can ever be connected, it must be a private chat (not a group), and everyone else who messages the bot just gets "This is a private bot."
+
+1. The developer creates a bot with **@BotFather** (`/newbot`) and stores the token:
    ```sql
    select vault.create_secret('<token from BotFather>', 'site_agent_telegram_bot_token');
    ```
@@ -123,10 +125,10 @@ It does **not** touch the three existing jobs. Once the owner says yes, apply it
    select public.agent_invoke('site-agent-cron', '{"job":"telegram_setup"}');
    select content from net._http_response where id = <that id>;   -- {"connect_link": "https://t.me/<bot>?start=..."}
    ```
-3. The owner opens the link on their phone and presses **Start**. The chat is connected: it's added to `agent_settings.telegram_chat_ids` and the link stops working.
-4. To add a teammate, send `/invite` in a connected chat and forward the new one-time link. Every connected chat is told whenever a new chat connects. To remove someone, delete their chat id from `telegram_chat_ids`.
+3. The developer opens the link on their phone and presses **Start**. That chat becomes the only one in `agent_settings.telegram_chat_ids`, the link stops working, and from then on `telegram_setup` refuses to make new links.
+4. To move to a new phone or chat: `update public.agent_settings set value = '[]' where key = 'telegram_chat_ids';`, then run step 2 again.
 
-Commands: `/check` `/alerts` `/approvals` `/approve <id>` `/reject <id>` `/cost` `/invite` `/stop` `/new`. Anything else is a question to the agent.
+Commands: `/check` `/alerts` `/approvals` `/approve <id>` `/reject <id>` `/cost` `/stop` `/new`. Anything else is a question to the agent.
 
 ## 8. Optional: code access (fix pull requests)
 

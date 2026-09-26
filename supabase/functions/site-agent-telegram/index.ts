@@ -1,22 +1,22 @@
-// Chat with the agent and approve its requests from Telegram.
+// The developer's private Telegram bot: Site Agent's reports and alerts, commands and approvals.
+// Exactly ONE chat (the developer's) is ever connected; everyone else is ignored.
 // Setup (see HANDOFF.md): create a bot with @BotFather, store its token in Vault as
 // site_agent_telegram_bot_token, deploy with --no-verify-jwt, then run the
 // "telegram_setup" job: it registers the webhook and returns a one-time connect link.
-// Opening that link (= sending "/start <code>") connects the chat.
+// Opening that link in a private chat (= sending "/start <code>") connects it.
 //
-// Commands: /help  /new  /stop  /check  /cost  /alerts  /approvals  /approve <id> [note]  /reject <id> [note]  /invite
+// Commands: /help  /new  /stop  /check  /cost  /alerts  /approvals  /approve <id> [note]  /reject <id> [note]
 // Anything else is a message to the agent.
 import { config } from "../_shared/config.ts";
 import { db, errorMessage, toJson } from "../_shared/db.ts";
-import { notifyOwners, sendTelegram, telegramApi } from "../_shared/notify.ts";
+import { sendTelegram, telegramApi } from "../_shared/notify.ts";
 import { contextBlock } from "../_shared/prompt.ts";
 import { ActiveRunError, cancelRun, createConversation, createRun, insertMessage, kickWorker } from "../_shared/runs.ts";
 import { ApprovalError, decideApproval, listPendingApprovals } from "../_shared/approvals.ts";
 import { runDailyCheck } from "../_shared/jobs.ts";
 import { monthToDateUsd } from "../_shared/ai_cost.ts";
 import { background, timingSafeEqual } from "../_shared/http.ts";
-import { addTelegramChat, ensureSettings, newTelegramClaimCode, redeemTelegramClaimCode } from "../_shared/settings.ts";
-import { botUsername } from "../_shared/setup.ts";
+import { connectOwnerChat, ensureSettings, redeemTelegramClaimCode } from "../_shared/settings.ts";
 
 const HELP = `Site Agent commands:
 /check - run the full morning check now (rule-based, free)
@@ -27,7 +27,6 @@ const HELP = `Site Agent commands:
 /reject <id> [note] - reject a request
 /stop - stop what the agent is doing
 /new - start a fresh conversation
-/invite - one-time link to connect another person
 Anything else: just ask (e.g. "which orders are late?" or "why is the site slow?").`;
 
 async function currentConversation(chatId: string): Promise<string> {
@@ -92,13 +91,6 @@ async function handle(chatId: string, text: string, from: string) {
         );
       }
 
-      case "/invite": {
-        const code = await newTelegramClaimCode();
-        return await reply(
-          `Forward this link to the person who should get Site Agent messages. It works once, and any earlier unused link stops working:\n\nhttps://t.me/${await botUsername()}?start=${code}`,
-        );
-      }
-
       case "/approve":
       case "/reject": {
         const id = Number(rest[0]);
@@ -145,30 +137,23 @@ async function handle(chatId: string, text: string, from: string) {
   }
 }
 
-/** A chat that isn't connected yet: "/start <code>" (from the connect link) connects it. */
-async function connect(chatId: string, text: string, from: string) {
+/**
+ * A chat that isn't connected. Only while NO chat is connected, and only in a private chat,
+ * "/start <code>" (from the one-time connect link) makes it the one chat that gets messages.
+ */
+async function connect(chatId: string, chatType: string, text: string, from: string) {
   const code = text.match(/^\/(?:start|connect)(?:@\w+)?\s+([A-Za-z0-9_-]{16,64})$/)?.[1];
-  if (!code || !(await redeemTelegramClaimCode(code))) {
-    console.warn("telegram message from unconnected chat", toJson({ chatId, from }));
-    await sendTelegram(
-      chatId,
-      "This chat isn't connected to Site Agent. Ask the owner for a connect link (they can send /invite to the bot).",
-    );
+  const ok = code && chatType === "private" && config.notify.telegramChatIds.length === 0 &&
+    await redeemTelegramClaimCode(code) && await connectOwnerChat(chatId);
+  if (!ok) {
+    console.warn("telegram message from an unconnected chat (ignored)", toJson({ chatId, chatType, from }));
+    await sendTelegram(chatId, "This is a private bot.");
     return;
   }
-  await addTelegramChat(chatId);
   await sendTelegram(
     chatId,
-    `✅ Connected. The morning report arrives here at 8:00, and alerts as soon as something breaks.\n\n${HELP}`,
+    `✅ Connected. You're the only one who gets Site Agent messages: the morning report at 8:00, and alerts as soon as something breaks.\n\n${HELP}`,
   );
-  await notifyOwners({
-    kind: "system",
-    severity: "info",
-    force: true,
-    title: "New Telegram chat connected",
-    body: `${from} (chat ${chatId}) now receives Site Agent messages and can approve requests.\n` +
-      `If this wasn't you, remove ${chatId} from telegram_chat_ids in the agent_settings table.`,
-  });
 }
 
 Deno.serve(async (req) => {
@@ -180,7 +165,7 @@ Deno.serve(async (req) => {
   }
 
   const update = await req.json().catch(() => null) as {
-    message?: { text?: string; chat: { id: number }; from?: { first_name?: string; username?: string } };
+    message?: { text?: string; chat: { id: number; type?: string }; from?: { first_name?: string; username?: string } };
   } | null;
   const msg = update?.message;
   if (!msg?.text) return new Response("ok");
@@ -191,7 +176,9 @@ Deno.serve(async (req) => {
   // (it may have just been connected through another instance).
   if (!config.notify.telegramChatIds.includes(chatId)) await ensureSettings(true);
   if (!config.notify.telegramChatIds.includes(chatId)) {
-    background(connect(chatId, msg.text.trim(), from).catch((e) => console.error("telegram connect failed", e)));
+    background(
+      connect(chatId, msg.chat.type ?? "", msg.text.trim(), from).catch((e) => console.error("telegram connect failed", e)),
+    );
     return new Response("ok");
   }
 
