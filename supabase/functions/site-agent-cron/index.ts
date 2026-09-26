@@ -3,6 +3,7 @@
 //   {"job":"monitor"}        -> rule-based quick checks every 15 minutes
 //   {"job":"status"}         -> setup status (which settings/secrets are present - never their values)
 //   {"job":"telegram_setup"} -> connects the Telegram bot and returns a one-time link to connect a chat
+//   {"job":"test_message"}   -> sends a test message on every configured channel (email, Telegram)
 // No AI is used unless a check finds a NEW problem (then one small Claude Haiku call).
 // Requires the x-agent-secret header. Deploy with --no-verify-jwt.
 import { background, hasInternalSecret, json } from "../_shared/http.ts";
@@ -10,7 +11,7 @@ import { runDailyCheck, runMonitor } from "../_shared/jobs.ts";
 import { notifyOwners } from "../_shared/notify.ts";
 import { errorMessage } from "../_shared/db.ts";
 import { ensureSettings } from "../_shared/settings.ts";
-import { setupStatus, setupTelegram } from "../_shared/setup.ts";
+import { sendTestMessage, setupStatus, setupTelegram } from "../_shared/setup.ts";
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
@@ -20,9 +21,11 @@ Deno.serve(async (req) => {
   const { job } = await req.json().catch(() => ({})) as { job?: string };
 
   // Quick setup jobs answer directly (read the answer from net._http_response).
-  if (job === "status" || job === "telegram_setup") {
+  if (job === "status" || job === "telegram_setup" || job === "test_message") {
     try {
-      return json(job === "status" ? await setupStatus() : await setupTelegram());
+      return json(
+        job === "status" ? await setupStatus() : job === "telegram_setup" ? await setupTelegram() : await sendTestMessage(),
+      );
     } catch (e) {
       console.error(`job ${job} failed`, e);
       return json({ error: errorMessage(e) }, 500);
@@ -46,7 +49,7 @@ Deno.serve(async (req) => {
   };
 
   if (job !== "daily" && job !== "monitor") {
-    return json({ error: 'expected {"job":"daily"|"monitor"|"status"|"telegram_setup"}' }, 400);
+    return json({ error: 'expected {"job":"daily"|"monitor"|"status"|"telegram_setup"|"test_message"}' }, 400);
   }
   // Respond right away (pg_net only waits 10s); the checks continue in the background.
   background(work());

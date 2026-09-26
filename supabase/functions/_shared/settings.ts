@@ -38,6 +38,7 @@ export async function ensureSettings(force = false): Promise<void> {
     source("TELEGRAM_WEBHOOK_SECRET", "site_agent_telegram_webhook_secret");
     source("AGENT_SUPABASE_PAT", "site_agent_supabase_pat");
     source("GITHUB_TOKEN", "site_agent_github_token");
+    source("RESEND_API_KEY", "site_agent_resend_api_key");
     if (!envSet("AGENT_INTERNAL_SECRET") && S.site_agent_internal_secret) config.internalSecret = S.site_agent_internal_secret;
     if (!envSet("ANTHROPIC_API_KEY") && S.site_agent_anthropic_api_key) config.anthropicApiKey = S.site_agent_anthropic_api_key;
     if (!envSet("TELEGRAM_BOT_TOKEN") && S.site_agent_telegram_bot_token) {
@@ -49,6 +50,7 @@ export async function ensureSettings(force = false): Promise<void> {
     config.notify.telegramClaimCode = S.site_agent_telegram_claim_code ?? "";
     if (!envSet("AGENT_SUPABASE_PAT") && S.site_agent_supabase_pat) config.managementToken = S.site_agent_supabase_pat;
     if (!envSet("GITHUB_TOKEN") && S.site_agent_github_token) config.github.token = S.site_agent_github_token;
+    if (!envSet("RESEND_API_KEY") && S.site_agent_resend_api_key) config.notify.resendApiKey = S.site_agent_resend_api_key;
 
     // plain settings (agent_settings)
     if (!envSet("SITE_URL") && text(V.site_url)) config.siteUrl = text(V.site_url).replace(/\/+$/, "");
@@ -56,6 +58,10 @@ export async function ensureSettings(force = false): Promise<void> {
     // Chats connected with the connection code are added to whatever TELEGRAM_CHAT_IDS lists.
     config.notify.telegramChatIds = [...new Set([...list(Deno.env.get("TELEGRAM_CHAT_IDS")), ...list(V.telegram_chat_ids)])];
     if (!envSet("AGENT_DASHBOARD_URL") && text(V.dashboard_url)) config.notify.dashboardUrl = text(V.dashboard_url);
+    // Email (Resend): exactly one recipient - the developer.
+    if (!envSet("ALERT_EMAIL_TO") && V.email_to !== undefined) config.notify.emailTo = list(V.email_to).slice(0, 1);
+    // Without a verified domain, Resend only sends from onboarding@resend.dev (to the account's own address).
+    if (!envSet("ALERT_EMAIL_FROM")) config.notify.emailFrom = text(V.email_from) || "Site Agent <onboarding@resend.dev>";
     if (!envSet("GITHUB_REPO") && text(V.github_repo)) config.github.repo = text(V.github_repo);
     const sev = text(V.notify_min_severity);
     if (!envSet("NOTIFY_MIN_SEVERITY") && ["info", "warning", "critical"].includes(sev)) {

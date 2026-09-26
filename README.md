@@ -3,11 +3,11 @@
 A near-zero-cost operations assistant for LogistiX. It lives inside your Supabase project:
 
 - It works only in the background: it checks the website and the database on a schedule and alerts you the moment something new breaks.
-- Every message goes to **one person only, the developer, on Telegram** (a private bot nobody else can connect to). Nothing is added to the website itself.
+- Every message goes to **one person only, the developer, by email**. Nothing is added to the website itself.
 
 **The scheduled checks use no AI at all.** They are plain database queries and HTTP checks. The only automatic AI use is when a check finds a **NEW** problem: then one short call to **Claude Haiku** explains it and suggests a fix, once per problem. A day with no new problems makes **zero** AI calls.
 
-It's a reporter, not a chat. If someone ever messages the Telegram bot with a question, **Claude Sonnet 5** answers it.
+It's a reporter, not a chat. (An optional Telegram bot can be added later for questions, answered by **Claude Sonnet 5**.)
 
 > **Setup details:** see [`HANDOFF.md`](HANDOFF.md).
 
@@ -15,10 +15,9 @@ It's a reporter, not a chat. If someone ever messages the Telegram bot with a qu
 
 | When | What happens | AI cost |
 |---|---|---|
-| **08:00 every morning (PKT)** | 21 rule-based checks run: the website and its JS/CSS files, the Supabase API, database health, failed cron jobs, failed Edge Function calls, security settings, and 12 business rules for orders, ETAs, fleet documents, invoices, contracts and the fuel-price feed. The **morning report** arrives on Telegram. | **Free.** Plus one Haiku call (≈ US$0.005) only if a problem is new. |
+| **08:00 every morning (PKT)** | 21 rule-based checks run: the website and its JS/CSS files, the Supabase API, database health, failed cron jobs, failed Edge Function calls, security settings, and 12 business rules for orders, ETAs, fleet documents, invoices, contracts and the fuel-price feed. The **morning report** arrives by email. | **Free.** Plus one Haiku call (≈ US$0.005) only if a problem is new. |
 | **Every 15 minutes** | Quick uptime checks. A new failure posts an alert with a short explanation. When it's fixed, you get "✅ Recovered". | **Free.** Plus one Haiku call only if a problem is new. |
-| **/check** (Telegram) | The same full check, on demand. | Same as above |
-| Optional: someone asks the Telegram bot a question | Claude Sonnet 5 answers. Any change it proposes waits for your approval. | ≈ US$0.02–0.20 per question |
+| Optional (only if Telegram is added): a question to the bot | Claude Sonnet 5 answers. Any change it proposes waits for your approval. | ≈ US$0.02–0.20 per question |
 
 ## Example message
 
@@ -41,7 +40,7 @@ A problem that is still open the next day shows up as `(open since 26 Sept)`, wi
 | Morning checks + 15-minute monitor | 30 reports, about 2,900 monitor runs | **US$0.00** |
 | Explaining new problems (Claude Haiku) | about 5–10 new problems a month, ≈ US$0.005 each | **≈ US$0.03–0.05** |
 | Questions | none (this agent isn't used for questions) | **US$0.00** |
-| Supabase / Telegram | Everything fits inside normal plan limits; Telegram is free | **US$0.00** |
+| Supabase / email | Everything fits inside normal plan limits; Resend's free plan covers 3,000 emails a month | **US$0.00** |
 | **Total** | | **≈ US$0.05 a month (under 10 cents)** |
 
 A bad month with 30 new problems would still be only ≈ US$0.15.
@@ -49,7 +48,7 @@ A bad month with 30 new problems would still be only ≈ US$0.15.
 Three things keep it bounded:
 
 - **Hard monthly cap:** `AI_MONTHLY_BUDGET_USD` (default **US$5**). When it's reached, all Site Agent AI calls stop until next month. Checks, reports and alerts keep working.
-- **Spend tracking:** every Claude call is logged with its estimated cost in `agent_ai_calls`. Send `/cost` on Telegram to see this month's spend.
+- **Spend tracking:** every Claude call is logged with its estimated cost in `agent_ai_calls`. Run the `status` job to see this month's spend (`ai.spent_this_month_usd`).
 - **Zero AI option:** set `AI_EXPLAIN_PROBLEMS=false` for zero automatic AI calls ever. Messages then arrive without the explanation.
 
 > The separate **✦ Research assistant** already in LogistiX (the `research-agent` function) is not part of Site Agent. It uses Claude Opus 5 plus web searches for every message, and it is **not** covered by this cap.
@@ -87,10 +86,10 @@ Once you trust it more, the `autonomy` setting (in `agent_settings`) can be rela
             │
             ├─► NEW problem only ─► 1 × Claude Haiku (explain + suggest fix, no tools)
             ▼
-   message ──► Telegram (and optionally email / WhatsApp / Slack)
+   message ──► email to the developer (Resend)
           └──► saved in agent_notifications (a log of everything sent)
 
- Optional: question sent to the Telegram bot ─► site-agent-worker ─► Claude Sonnet 5 + tools
+ Optional (Telegram): question sent to the bot ─► site-agent-worker ─► Claude Sonnet 5 + tools
 ```
 
 ## Files

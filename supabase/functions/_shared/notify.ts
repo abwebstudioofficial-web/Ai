@@ -83,9 +83,10 @@ async function sendEmail(subject: string, text: string): Promise<void> {
       to: n.emailTo,
       subject,
       text,
-      html: `<pre style="font-family:ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;font-size:14px">${
-        text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      }</pre>`,
+      html:
+        `<div style="font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;white-space:pre-wrap;font-size:15px;line-height:1.5;color:#1f2937">${
+          text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        }</div>`,
     }),
   });
 }

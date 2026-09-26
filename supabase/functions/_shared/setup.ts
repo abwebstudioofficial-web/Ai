@@ -5,7 +5,7 @@
 // Secret VALUES are never returned, only where each one comes from.
 import { config } from "./config.ts";
 import { db, errorMessage } from "./db.ts";
-import { telegramApi } from "./notify.ts";
+import { notifyOwners, telegramApi } from "./notify.ts";
 import { monthToDateUsd } from "./ai_cost.ts";
 import { newTelegramClaimCode, secretSources } from "./settings.ts";
 
@@ -72,6 +72,11 @@ export async function setupStatus(): Promise<Record<string, unknown>> {
     site_key_paths: config.siteKeyPaths,
     secrets: { ...secretSources },
     anthropic_key_works: anthropicOk,
+    email: {
+      configured: Boolean(config.notify.resendApiKey && config.notify.emailFrom && config.notify.emailTo.length),
+      recipients: config.notify.emailTo.length,
+      from: config.notify.emailFrom || null,
+    },
     telegram: { ...telegram, connected_chats: config.notify.telegramChatIds.length, unused_connect_code: claim.n > 0 },
     autonomy: config.autonomy,
     ai: {
@@ -123,4 +128,18 @@ export async function setupTelegram(): Promise<Record<string, unknown>> {
     connect_link: `https://t.me/${me.username}?start=${code}`,
     note: "Open it on your phone (private chat). It works once; after that nobody else can connect.",
   };
+}
+
+/** Sends a test message on every configured channel (email, Telegram...) and returns what happened. */
+export async function sendTestMessage(): Promise<Record<string, unknown>> {
+  const delivered = await notifyOwners({
+    kind: "system",
+    severity: "info",
+    force: true,
+    title: "Site Agent test message",
+    body: "If you can read this, Site Agent can reach you.\n\n" +
+      "You'll get the morning report at 8:00 (Pakistan time) and an alert as soon as something new breaks, " +
+      "with the details you need to fix it.",
+  });
+  return { delivered };
 }
