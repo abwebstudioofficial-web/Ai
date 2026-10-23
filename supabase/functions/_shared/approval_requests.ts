@@ -1,7 +1,6 @@
 // Creating approval requests (kept separate from executing them to avoid an
 // import cycle with the tool registry).
 import { db, toJson } from "./db.ts";
-import { config } from "./config.ts";
 import { notifyOwners } from "./notify.ts";
 import type { ToolContext, ToolInput, ToolResult } from "./tools/types.ts";
 
@@ -25,10 +24,7 @@ export async function requestApproval(
     values (${ctx.runId}, ${ctx.conversationId}, ${toolName}, ${sql.json(input as never)}, ${reason})
     returning id`;
 
-  const how = [
-    "Approve or reject it in the Site Agent dashboard",
-    config.notify.telegramBotToken ? `or reply /approve ${row.id} (or /reject ${row.id}) to the Telegram bot` : "",
-  ].filter(Boolean).join(" ");
+  const how = `Reply /approve ${row.id} (or /reject ${row.id}) to the Telegram bot`;
 
   await notifyOwners({
     kind: "approval",

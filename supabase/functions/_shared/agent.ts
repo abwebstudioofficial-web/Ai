@@ -1,5 +1,5 @@
-// The chat agent loop - runs ONLY when someone asks a question (dashboard or
-// Telegram). A run is processed in chunks: each worker invocation does as many
+// The chat agent loop - runs ONLY when someone asks a question on
+// Telegram. A run is processed in chunks: each worker invocation does as many
 // Claude turns as fit in its time budget, saving every message to the database,
 // then hands the run back to the queue if there is more to do.
 import { Anthropic } from "./deps.ts";
@@ -8,7 +8,7 @@ import { db, errorMessage } from "./db.ts";
 import { apiTools, executeTool } from "./tools/index.ts";
 import { buildSystem } from "./prompt.ts";
 import { sendTelegram } from "./notify.ts";
-import { budgetBlock, recordAiCall } from "./ai_cost.ts";
+import { budgetBlock, friendlyAiError, recordAiCall } from "./ai_cost.ts";
 import {
   claimRun,
   finishRun,
@@ -101,7 +101,7 @@ async function replyOnTelegram(run: RunRow, text: string) {
   try {
     const conversation = await getConversation(run.conversation_id);
     if (conversation?.source === "telegram" && conversation.external_id) {
-      await sendTelegram(conversation.external_id, text || "(no text in the answer - see the dashboard)");
+      await sendTelegram(conversation.external_id, text || "(no text in the answer)");
     }
   } catch (e) {
     console.error("Telegram reply failed", e);
@@ -239,7 +239,7 @@ export async function processRun(runId: string, deadline: number): Promise<"done
       return "yielded";
     }
     await finishRun(run.id, "error", null, msg);
-    await onRunFailed(run, msg);
+    await onRunFailed(run, friendlyAiError(e));
     return "done";
   }
 }

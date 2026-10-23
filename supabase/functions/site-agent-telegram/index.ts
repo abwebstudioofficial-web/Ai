@@ -1,19 +1,22 @@
-// Optional: chat with the agent and approve its requests from Telegram.
-// Setup (see HANDOFF.md): create a bot with @BotFather, set TELEGRAM_BOT_TOKEN,
-// TELEGRAM_WEBHOOK_SECRET and TELEGRAM_CHAT_IDS, deploy with --no-verify-jwt,
-// then register the webhook with the secret token.
+// The developer's private Telegram bot: Site Agent's reports and alerts, commands and approvals.
+// Exactly ONE chat (the developer's) is ever connected; everyone else is ignored.
+// Setup (see HANDOFF.md): create a bot with @BotFather, store its token in Vault as
+// site_agent_telegram_bot_token, deploy with --no-verify-jwt, then run the
+// "telegram_setup" job: it registers the webhook and returns a one-time connect link.
+// Opening that link in a private chat (= sending "/start <code>") connects it.
 //
 // Commands: /help  /new  /stop  /check  /cost  /alerts  /approvals  /approve <id> [note]  /reject <id> [note]
 // Anything else is a message to the agent.
 import { config } from "../_shared/config.ts";
 import { db, errorMessage, toJson } from "../_shared/db.ts";
-import { sendTelegram } from "../_shared/notify.ts";
+import { sendTelegram, telegramApi } from "../_shared/notify.ts";
 import { contextBlock } from "../_shared/prompt.ts";
 import { ActiveRunError, cancelRun, createConversation, createRun, insertMessage, kickWorker } from "../_shared/runs.ts";
 import { ApprovalError, decideApproval, listPendingApprovals } from "../_shared/approvals.ts";
 import { runDailyCheck } from "../_shared/jobs.ts";
 import { monthToDateUsd } from "../_shared/ai_cost.ts";
 import { background, timingSafeEqual } from "../_shared/http.ts";
+import { connectOwnerChat, ensureSettings, redeemTelegramClaimCode } from "../_shared/settings.ts";
 
 const HELP = `Site Agent commands:
 /check - run the full morning check now (rule-based, free)
@@ -122,11 +125,7 @@ async function handle(chatId: string, text: string, from: string) {
           [await contextBlock(`telegram (${from})`), { type: "text", text }],
           text,
         );
-        await fetch(`https://api.telegram.org/bot${config.notify.telegramBotToken}/sendChatAction`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-        }).then((r) => r.body?.cancel()).catch(() => {});
+        await telegramApi("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
         await kickWorker(runId);
         return;
       }
@@ -138,32 +137,51 @@ async function handle(chatId: string, text: string, from: string) {
   }
 }
 
+/**
+ * A chat that isn't connected. Only while NO chat is connected, and only in a private chat,
+ * "/start <code>" (from the one-time connect link) makes it the one chat that gets messages.
+ */
+async function connect(chatId: string, chatType: string, text: string, from: string) {
+  const code = text.match(/^\/(?:start|connect)(?:@\w+)?\s+([A-Za-z0-9_-]{16,64})$/)?.[1];
+  const ok = code && chatType === "private" && config.notify.telegramChatIds.length === 0 &&
+    await redeemTelegramClaimCode(code) && await connectOwnerChat(chatId);
+  if (!ok) {
+    console.warn("telegram message from an unconnected chat (ignored)", toJson({ chatId, chatType, from }));
+    await sendTelegram(chatId, "This is a private bot.");
+    return;
+  }
+  await sendTelegram(
+    chatId,
+    `✅ Connected. You're the only one who gets Site Agent messages: the morning report at 8:00, and alerts as soon as something breaks.\n\n${HELP}`,
+  );
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("ok");
+  await ensureSettings();
   const secret = req.headers.get("x-telegram-bot-api-secret-token") ?? "";
   if (!config.notify.telegramWebhookSecret || !timingSafeEqual(secret, config.notify.telegramWebhookSecret)) {
     return new Response("forbidden", { status: 403 });
   }
 
   const update = await req.json().catch(() => null) as {
-    message?: { text?: string; chat: { id: number }; from?: { first_name?: string; username?: string } };
+    message?: { text?: string; chat: { id: number; type?: string }; from?: { first_name?: string; username?: string } };
   } | null;
   const msg = update?.message;
   if (!msg?.text) return new Response("ok");
 
   const chatId = String(msg.chat.id);
+  const from = msg.from?.username ? `@${msg.from.username}` : msg.from?.first_name ?? "someone";
+  // Settings are cached for a minute per instance: re-read before treating a chat as unknown
+  // (it may have just been connected through another instance).
+  if (!config.notify.telegramChatIds.includes(chatId)) await ensureSettings(true);
   if (!config.notify.telegramChatIds.includes(chatId)) {
-    // Helps with setup: tells you the id to add to TELEGRAM_CHAT_IDS.
     background(
-      sendTelegram(chatId, `This chat isn't authorised. If you're the owner, add ${chatId} to TELEGRAM_CHAT_IDS.`).catch(
-        () => {},
-      ),
+      connect(chatId, msg.chat.type ?? "", msg.text.trim(), from).catch((e) => console.error("telegram connect failed", e)),
     );
-    console.warn("telegram message from unauthorised chat", toJson({ chatId, from: msg.from }));
     return new Response("ok");
   }
 
-  const from = msg.from?.username ? `@${msg.from.username}` : msg.from?.first_name ?? "owner";
   // Answer Telegram immediately; do the work in the background.
   background(handle(chatId, msg.text.trim(), from));
   return new Response("ok");

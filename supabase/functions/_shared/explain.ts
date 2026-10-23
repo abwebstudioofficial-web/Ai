@@ -5,14 +5,14 @@ import { Anthropic } from "./deps.ts";
 import { config } from "./config.ts";
 import { toJson } from "./db.ts";
 import type { CheckResult } from "./checks.ts";
-import { budgetBlock, recordAiCall } from "./ai_cost.ts";
+import { budgetBlock, friendlyAiError, recordAiCall } from "./ai_cost.ts";
 import { memoryNotes, nowText } from "./prompt.ts";
 
 const SYSTEM = `You are the on-call assistant for LogistiX, a logistics company's web app on Supabase.
 Automatic, rule-based checks found problems. For each problem, explain it to the business owner in plain language:
 - what it means for the business,
 - the most likely cause,
-- the suggested fix: one concrete next step. If a data or code change is needed, say the owner can ask Site Agent in the dashboard or Telegram to prepare it for approval.
+- the suggested fix: one concrete next step. If a data or code change is needed, say the owner can ask Site Agent on Telegram to prepare it for approval.
 Rules: use only the data given - don't invent facts. If rows look like old imported data rather than a live problem, say so. Max 3 short lines per problem, no preamble, plain text (it's read on a phone).
 Start each problem's section with a line exactly like: ### <check name>`;
 
@@ -71,6 +71,6 @@ export async function explainProblems(problems: CheckResult[], source: string): 
     return { text, perCheck, costUsd };
   } catch (e) {
     console.error("explainProblems failed", e);
-    return { ...none, skippedReason: `AI explanation failed: ${e instanceof Error ? e.message : String(e)}` };
+    return { ...none, skippedReason: `AI explanation failed: ${friendlyAiError(e)}` };
   }
 }

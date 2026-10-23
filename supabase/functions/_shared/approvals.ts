@@ -1,4 +1,4 @@
-// Executing / rejecting approval requests (from the dashboard or Telegram).
+// Executing / rejecting approval requests (from Telegram).
 // No AI call happens here: the result is shown to the owner directly and noted in
 // the conversation, so the agent sees it the next time the owner writes.
 import { clip, db } from "./db.ts";

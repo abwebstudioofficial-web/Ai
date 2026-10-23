@@ -69,3 +69,15 @@ export async function budgetBlock(): Promise<string | null> {
   return `This month's AI budget (US$${config.monthlyBudgetUsd.toFixed(2)}) is used up ` +
     `(US$${spent.toFixed(2)} spent). Raise AI_MONTHLY_BUDGET_USD to continue; checks and alerts keep working without AI.`;
 }
+
+/** Turns Claude API account errors into a plain-English sentence (anything else: the raw message). */
+export function friendlyAiError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  if (/credit balance is too low/i.test(raw)) {
+    return "the Claude account has no credit left. Add credit at console.anthropic.com -> Plans & Billing " +
+      "(US$5 lasts months with this setup), or turn AI explanations off with the ai_explain_problems setting.";
+  }
+  if (/invalid x-api-key|authentication_error/i.test(raw)) return "the Claude API key was rejected (check ANTHROPIC_API_KEY).";
+  if (/permission_error/i.test(raw)) return "the Claude API key isn't allowed to use this model.";
+  return raw.length > 300 ? `${raw.slice(0, 300)}…` : raw;
+}

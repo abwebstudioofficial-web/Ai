@@ -100,6 +100,9 @@ export const config = {
     telegramBotToken: env("TELEGRAM_BOT_TOKEN"),
     telegramChatIds: envList("TELEGRAM_CHAT_IDS"),
     telegramWebhookSecret: env("TELEGRAM_WEBHOOK_SECRET"),
+    // One-time-style code the owner sends to the bot ("/start <code>") to connect a chat.
+    // Only settable in Vault (site_agent_telegram_claim_code).
+    telegramClaimCode: "",
     resendApiKey: env("RESEND_API_KEY"),
     emailFrom: env("ALERT_EMAIL_FROM"),
     emailTo: envList("ALERT_EMAIL_TO"),
