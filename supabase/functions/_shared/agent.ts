@@ -1,5 +1,6 @@
-// The chat agent loop - runs ONLY when someone asks a question on
-// Telegram. A run is processed in chunks: each worker invocation does as many
+// The AI agent loop - runs ONLY when someone asks a question on Telegram ("chat"),
+// or to fix a small front-end bug the site's error catcher reported ("autofix", with its
+// own instructions and a small, restricted set of tools - see autofix.ts). A run is processed in chunks: each worker invocation does as many
 // Claude turns as fit in its time budget, saving every message to the database,
 // then hands the run back to the queue if there is more to do.
 import { Anthropic } from "./deps.ts";
@@ -9,6 +10,7 @@ import { apiTools, executeTool } from "./tools/index.ts";
 import { buildSystem } from "./prompt.ts";
 import { sendTelegram } from "./notify.ts";
 import { budgetBlock, friendlyAiError, recordAiCall } from "./ai_cost.ts";
+import { autofixRunEnded, autofixSystem, autofixTools } from "./autofix.ts";
 import {
   claimRun,
   finishRun,
@@ -108,8 +110,10 @@ async function replyOnTelegram(run: RunRow, text: string) {
   }
 }
 
-const onRunFinished = (run: RunRow, text: string) => replyOnTelegram(run, text);
-const onRunFailed = (run: RunRow, error: string) => replyOnTelegram(run, `Sorry - I hit an error: ${error}`);
+const onRunFinished = (run: RunRow, text: string) =>
+  run.kind === "autofix" ? autofixRunEnded(run.id, text, null) : replyOnTelegram(run, text);
+const onRunFailed = (run: RunRow, error: string) =>
+  run.kind === "autofix" ? autofixRunEnded(run.id, "", error) : replyOnTelegram(run, `Sorry - I hit an error: ${error}`);
 
 function isRetryable(e: unknown): boolean {
   if (e instanceof Anthropic.APIConnectionError) return true; // includes timeouts
@@ -136,9 +140,12 @@ export async function processRun(runId: string, deadline: number): Promise<"done
   }
 
   const client = new Anthropic({ apiKey: config.anthropicApiKey, maxRetries: 1 });
-  const system = await buildSystem();
-  const tools = apiTools();
-  const ctx = { runId: run.id, conversationId: run.conversation_id, approved: false };
+  const isFix = run.kind === "autofix";
+  const system = isFix ? autofixSystem() : await buildSystem();
+  const toolset = isFix ? autofixTools : undefined;
+  const tools = apiTools(toolset);
+  // The auto-fixer's tools enforce their own rules (autofix_policy.ts), so no approval round-trips.
+  const ctx = { runId: run.id, conversationId: run.conversation_id, approved: isFix };
   let turns = run.turns;
   let truncations = 0;
 
@@ -173,7 +180,7 @@ export async function processRun(runId: string, deadline: number): Promise<"done
 
       const response = await callClaude(client, await loadHistory(run.conversation_id), system, tools, deadline, finalAnswerOnly);
       turns = await recordTurn(run.id, response.usage as unknown as Record<string, unknown>);
-      await recordAiCall(response.model || config.model, "chat", response.usage, run.id);
+      await recordAiCall(response.model || config.model, isFix ? "autofix" : "chat", response.usage, run.id);
 
       switch (response.stop_reason) {
         case "tool_use": {
@@ -181,7 +188,7 @@ export async function processRun(runId: string, deadline: number): Promise<"done
           const calls = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
           const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
           for (const call of calls) {
-            const r = await executeTool(call.name, call.input, ctx);
+            const r = await executeTool(call.name, call.input, ctx, toolset);
             results.push({
               type: "tool_result",
               tool_use_id: call.id,

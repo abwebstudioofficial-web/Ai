@@ -71,6 +71,7 @@ export async function ensureSettings(force = false): Promise<void> {
     if (!envSet("AI_MONTHLY_BUDGET_USD") && text(V.ai_monthly_budget_usd) !== "" && Number.isFinite(budget)) {
       config.monthlyBudgetUsd = budget;
     }
+    if (!envSet("AUTOFIX_ENABLED") && typeof V.autofix_enabled === "boolean") config.autofixEnabled = V.autofix_enabled;
     if (!envSet("AI_EXPLAIN_PROBLEMS") && typeof V.ai_explain_problems === "boolean") {
       config.explainProblems = V.ai_explain_problems;
     }

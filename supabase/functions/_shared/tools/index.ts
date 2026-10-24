@@ -23,14 +23,17 @@ function registry(): AgentTool[] {
   ];
 }
 
-/** Tool definitions for the Messages API. Order is stable so the prompt cache keeps hitting. */
-export function apiTools(): Anthropic.Beta.BetaToolUnion[] {
-  const defs: Anthropic.Beta.BetaToolUnion[] = registry().map((t) => ({
+/**
+ * Tool definitions for the Messages API. Order is stable so the prompt cache keeps hitting.
+ * `toolset` replaces the normal registry (the auto-fixer gets its own, much smaller set).
+ */
+export function apiTools(toolset?: AgentTool[]): Anthropic.Beta.BetaToolUnion[] {
+  const defs: Anthropic.Beta.BetaToolUnion[] = (toolset ?? registry()).map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.input_schema,
   }));
-  if (config.enableWebSearch) {
+  if (!toolset && config.enableWebSearch) {
     defs.push({ type: "web_search_20260209", name: "web_search", max_uses: 5 });
   }
   return defs;
@@ -68,9 +71,14 @@ async function audit(
   }
 }
 
-export async function executeTool(name: string, rawInput: unknown, ctx: ToolContext): Promise<ToolResult> {
+export async function executeTool(
+  name: string,
+  rawInput: unknown,
+  ctx: ToolContext,
+  toolset?: AgentTool[],
+): Promise<ToolResult> {
   const input = (rawInput && typeof rawInput === "object" ? rawInput : {}) as ToolInput;
-  const tool = registry().find((t) => t.name === name);
+  const tool = (toolset ?? registry()).find((t) => t.name === name);
   if (!tool) return { isError: true, outcome: "error", content: `Unknown tool "${name}".` };
 
   const risk = typeof tool.risk === "function" ? tool.risk(input) : tool.risk;

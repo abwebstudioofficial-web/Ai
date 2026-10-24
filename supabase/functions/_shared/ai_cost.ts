@@ -37,7 +37,7 @@ export function estimateCostUsd(model: string, u: Usage): number {
 
 export async function recordAiCall(
   model: string,
-  purpose: "chat" | "explain_problems",
+  purpose: "chat" | "explain_problems" | "autofix",
   usage: Usage,
   runId?: string | null,
 ): Promise<number> {

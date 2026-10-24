@@ -30,8 +30,10 @@
 | Path | What it is |
 |---|---|
 | `supabase/migrations/20260926000001_site_agent_schema.sql` | New `agent_*` tables (including the `agent_ai_calls` cost ledger), RLS (admins read-only from the browser), helper functions, the `agent_container_view` view, starter watch rules and memory notes. **Does not alter any existing table.** Safe to re-run. |
-| `supabase/migrations/20260926000002_site_agent_cron.sql` | 4 **new** pg_cron jobs: the 08:00 PKT rule-based morning report, a 15-minute monitor, a 1-minute sweeper and daily housekeeping. **Ask the owner before applying (rule 5).** |
+| `supabase/migrations/20260926000002_site_agent_cron.sql` | 4 **new** pg_cron jobs: the 08:00 PKT rule-based full check (no report; emails only new problems), a 15-minute monitor, a 1-minute sweeper and daily housekeeping. **Ask the owner before applying (rule 5).** |
 | `supabase/migrations/20260926000003_site_agent_no_dashboard_link.sql` | Removes the "Open dashboard" link setting (there is no Site Agent page). |
+| `supabase/migrations/20261023000001_site_agent_autofix.sql` | `agent_site_errors` (browser errors from the error catcher) and `agent_autofixes` (automatic fix attempts); wider CHECK lists; existing open alerts count as emailed. |
+| `supabase/functions/site-agent-errors` | Public endpoint for the site's error catcher (only the site's origin, small bodies, flood cap). Deploy with `--no-verify-jwt`. |
 | `supabase/functions/site-agent-worker` | Only used if someone sends the Telegram bot a question: answers with Claude Sonnet 5 in the background (chunked, so it never hits the Edge Function time limit). |
 | `supabase/functions/site-agent-cron` | Entry point for the scheduled jobs. Rule-based: no AI unless a check finds a NEW problem, then one Claude Haiku call. |
 | `supabase/functions/site-agent-telegram` | Optional: Telegram commands (/check, /alerts, /cost, /approve...) and optional questions. |
@@ -70,7 +72,8 @@ Site Agent reads its configuration from the database, so nothing has to be set o
 | `site_agent_resend_api_key` | The developer: the Resend API key for email (step 7) |
 | `site_agent_telegram_bot_token` | Optional: a Telegram bot token (step 7) |
 | `site_agent_anthropic_api_key` | Optional. Only needed if the project has no `ANTHROPIC_API_KEY` function secret. |
-| `site_agent_github_token`, `site_agent_supabase_pat` | Optional (step 8) |
+| `site_agent_github_token` | For automatic fixes (step 8) |
+| `site_agent_supabase_pat` | Optional: Supabase logs and advisors |
 | `site_agent_telegram_claim_code` | Created and deleted automatically: the one-time Telegram connect link |
 
 An Edge Function secret with the same meaning (`ANTHROPIC_API_KEY`, `SITE_URL`, `TELEGRAM_BOT_TOKEN`, see `.env.example`) always wins over the database. Telegram chats connected with a link are added to any `TELEGRAM_CHAT_IDS` secret.
@@ -90,9 +93,10 @@ select status_code, content from net._http_response where id = <that id>;
 supabase functions deploy site-agent-cron     --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
 supabase functions deploy site-agent-worker   --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
 supabase functions deploy site-agent-telegram --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
+supabase functions deploy site-agent-errors   --project-ref zonuxfqvyxhfkimdahkb --no-verify-jwt
 ```
 
-Why `--no-verify-jwt` is safe for these: worker and cron check the `x-agent-secret` header themselves, and telegram checks Telegram's secret token. None of them can be used from a browser.
+Why `--no-verify-jwt` is safe for these: worker and cron check the `x-agent-secret` header themselves, telegram checks Telegram's secret token, and errors only accepts small error reports from the site's own origin. None of them can be used from a browser.
 
 How they are deployed now: each live function is a one-line `index.ts` that imports this repo's code from a **pinned commit** (`https://raw.githubusercontent.com/abwebstudioofficial-web/Ai/<commit>/supabase/functions/<name>/index.ts`). Supabase bundles it at deploy time. To update, deploy the same one-liner with the new commit id.
 
@@ -106,7 +110,7 @@ Only `site_agent_project_url` is needed (see step 3). The migration already gene
 
 | Job | Schedule (UTC) | What it does |
 |---|---|---|
-| `site-agent-daily` | `0 3 * * *` = **08:00 PKT** | Rule-based full checks and the morning report to Telegram. **No AI** unless a check finds a new problem (then one Haiku call, about half a US cent). It runs after the HiCetane fetch (07:00/07:30 PKT). The PSO diesel job runs at 06:00 UTC = 11:00 PKT. |
+| `site-agent-daily` | `0 3 * * *` = **08:00 PKT** | Rule-based full checks. No report: only new problems are emailed (once each). **No AI** unless a check finds a new problem (then one Haiku call, about half a US cent). It runs after the HiCetane fetch (07:00/07:30 PKT). The PSO diesel job runs at 06:00 UTC = 11:00 PKT. |
 | `site-agent-monitor` | every 15 min | Quick uptime/critical checks. No AI unless something new breaks (then one Haiku call). |
 | `site-agent-sweep` | every minute | Only calls the worker if a Telegram question's answer was interrupted. Idle otherwise. |
 | `site-agent-retention` | `30 3 * * *` | Deletes old health checks and audit logs, and expires week-old approvals. |
@@ -131,7 +135,7 @@ It does **not** touch the three existing jobs. Once the owner says yes, apply it
    ```
    If it says `FAILED (403 ... your own email address)`, `email_to` isn't the Resend account's email.
 
-What arrives: the **morning report** at 08:00 PKT, an **alert** when something new breaks (each problem once, with the failing page, job or rows to fix), and **✅ Recovered** when it's fixed. Warnings and critical problems are emailed right away; info-level items only appear in the morning report.
+What arrives: **nothing on a normal day.** You get one email when something new needs a person (each problem once, with the failing page, job or rows to fix), **✅ Recovered** only for problems you were emailed about, and one short email after every automatic fix (what was broken, what changed, how to undo). Info-level findings, such as old imported containers, are never emailed.
 
 ### Optional: Telegram (two-way: `/check`, `/approve`, questions)
 
@@ -153,22 +157,18 @@ Not used at the moment (Telegram didn't open for the developer). If it's wanted 
 
 Commands: `/check` `/alerts` `/approvals` `/approve <id>` `/reject <id>` `/cost` `/stop` `/new`. Anything else is a question to the agent.
 
-## 8. Optional: code access (fix pull requests)
+## 8. Automatic fixes (error catcher + GitHub)
 
-Create a **fine-grained GitHub token** limited to `abwebstudioofficial-web/logistix` with:
+1. **Error catcher:** a `<script>` right after `<title>` in `index.html` and `fleet_drivers.html` posts browser errors to `site-agent-errors`. It sends no personal data, strips `?query` and `#hash` from URLs (so login tokens never leave the browser), and sends at most 20 reports per page load. The unpkg `<script>` tags have `crossorigin="anonymous"`; without it, browsers hide the real message of errors thrown through React ("Script error.").
+2. **site-check workflow** (`logistix/.github/workflows/site-check.yml` + `.github/site-check/check.mjs`) runs on every pull request to `main`. It compiles the app, opens every sidebar page with fake data, and compares browser errors with `main`. If the PR description has a `<!-- site-check {...} -->` block, it also proves that the reported error happens on `main` and is gone on the branch.
+3. **Site Agent's part** (`_shared/autofix.ts`, rules in `_shared/autofix_policy.ts`) needs two secrets in Vault:
+   - `site_agent_anthropic_api_key`: a Claude API key **with credit** (the fixes use Claude Sonnet 5, within the monthly budget cap).
+   - `site_agent_github_token`: a **fine-grained token** for `abwebstudioofficial-web/logistix` only, with these repository permissions: **Contents: read and write**, **Pull requests: read and write**, **Checks: read**, **Commit statuses: read** (Metadata: read is automatic). It doesn't need Workflows permission, because Site Agent never changes `.github/`.
+4. Turn it off with `update public.agent_settings ...` or `insert ... ('autofix_enabled', 'false')`. Errors are then just emailed to you.
 
-- Contents: read/write
-- Pull requests: read/write
-- Commit statuses: read
+Without the key and token everything else still works: errors are emailed as "Needs you" instead of being fixed.
 
-Set `GITHUB_TOKEN`. Also turn on **branch protection for `main`** (require a pull request), so even this token can't push to `main`.
-
-What the agent does with it:
-
-- Branches `maint/<name>` from the latest `main`.
-- Applies small find/replace edits. They fail if the code changed underneath, so it never overwrites anyone's work.
-- Checks `WORKING_ON.md` and open PRs first.
-- Opens a PR. It cannot merge.
+What the agent does with the token: it branches `maint/auto-fix-<n>` from the latest `main` and adds a `WORKING_ON.md` line. It merges only its own reviewed commit, after site-check passes and within the rules. Anything else waits for the developer.
 
 ## 9. Smoke test
 
@@ -189,8 +189,8 @@ What the agent does with it:
 | "This month's AI budget ... is used up" | Raise `AI_MONTHLY_BUDGET_USD`. Checks, reports and alerts keep working without AI in the meantime. |
 | Want zero automatic AI calls | Set `AI_EXPLAIN_PROBLEMS=false`. Reports and alerts still arrive, just without the explanation. |
 | "The Claude account has no credit left" | Add credit at console.anthropic.com → Plans & Billing, or set `ai_explain_problems` to `false` in `agent_settings`. |
-| Morning report never arrives | Run the `status` job (step 3), then `select * from cron.job_run_details where jobid in (select jobid from cron.job where jobname like 'site-agent-%') order by start_time desc limit 20;`, then the function logs. |
-| No emails | Run the `test_message` job and read its `delivered` result. Check the spam folder too. Alerts below `NOTIFY_MIN_SEVERITY` are not pushed; they are listed in the morning report. |
+| No emails ever | Run the `status` job (step 3), then `select * from cron.job_run_details where jobid in (select jobid from cron.job where jobname like 'site-agent-%') order by start_time desc limit 20;`, then the function logs. |
+| No emails | Run the `test_message` job and read its `delivered` result. Check the spam folder too. Remember there is no daily report: no email means nothing new needs you. |
 
 ## 11. Local checks you can re-run
 

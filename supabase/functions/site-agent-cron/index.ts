@@ -1,6 +1,6 @@
 // Entry point for scheduled jobs (pg_cron -> public.agent_invoke()).
-//   {"job":"daily"}          -> rule-based full checks + morning report to Telegram (08:00 PKT)
-//   {"job":"monitor"}        -> rule-based quick checks every 15 minutes
+//   {"job":"daily"}          -> rule-based full checks (08:00 PKT); emails only NEW problems, no report
+//   {"job":"monitor"}        -> quick checks + browser errors + auto-fixes, every 15 minutes
 //   {"job":"status"}         -> setup status (which settings/secrets are present - never their values)
 //   {"job":"telegram_setup"} -> connects the Telegram bot and returns a one-time link to connect a chat
 //   {"job":"test_message"}   -> sends a test message on every configured channel (email, Telegram)
@@ -10,6 +10,7 @@ import { background, hasInternalSecret, json } from "../_shared/http.ts";
 import { runDailyCheck, runMonitor } from "../_shared/jobs.ts";
 import { notifyOwners } from "../_shared/notify.ts";
 import { errorMessage } from "../_shared/db.ts";
+import { resolveAlertByKey, upsertAlert } from "../_shared/alerts.ts";
 import { ensureSettings } from "../_shared/settings.ts";
 import { sendTestMessage, setupStatus, setupTelegram } from "../_shared/setup.ts";
 
@@ -32,18 +33,31 @@ Deno.serve(async (req) => {
     }
   }
 
+  // A failing job is emailed once (not every 15 minutes); "Recovered" when it works again.
+  const failureKey = `system:job:${job}`;
   const work = async () => {
     try {
       if (job === "daily") await runDailyCheck();
       else if (job === "monitor") await runMonitor();
+      const done = await resolveAlertByKey(failureKey, "The job ran successfully again.");
+      if (done?.notified) {
+        await notifyOwners({
+          kind: "recovery",
+          severity: "info",
+          force: true,
+          title: `Recovered: Site Agent ${job} job`,
+          body: done.title,
+        });
+      }
     } catch (e) {
       console.error(`job ${job} failed`, e);
-      await notifyOwners({
-        kind: "system",
+      await upsertAlert({
         severity: "critical",
-        force: true,
+        category: "site_agent",
         title: `Site Agent ${job} job failed`,
         body: errorMessage(e),
+        dedupeKey: failureKey,
+        source: "system",
       }).catch(() => {});
     }
   };

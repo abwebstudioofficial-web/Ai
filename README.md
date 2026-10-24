@@ -13,41 +13,46 @@ It's a reporter, not a chat. (An optional Telegram bot can be added later for qu
 
 ## What happens when
 
+**On a normal day you get no email at all.** You only hear from Site Agent when a person is genuinely needed, or when it changed the live site.
+
 | When | What happens | AI cost |
 |---|---|---|
-| **08:00 every morning (PKT)** | 21 rule-based checks run: the website and its JS/CSS files, the Supabase API, database health, failed cron jobs, failed Edge Function calls, security settings, and 12 business rules for orders, ETAs, fleet documents, invoices, contracts and the fuel-price feed. The **morning report** arrives by email. | **Free.** Plus one Haiku call (≈ US$0.005) only if a problem is new. |
-| **Every 15 minutes** | Quick uptime checks. A new failure posts an alert with a short explanation. When it's fixed, you get "✅ Recovered". | **Free.** Plus one Haiku call only if a problem is new. |
-| Optional (only if Telegram is added): a question to the bot | Claude Sonnet 5 answers. Any change it proposes waits for your approval. | ≈ US$0.02–0.20 per question |
+| **08:00 every day (PKT)** | 21 rule-based checks run (website + JS/CSS files, Supabase API, database health, failed cron jobs and Edge Function calls, security settings, 12 business rules for orders, ETAs, fleet documents, invoices, contracts and the fuel-price feed). **No report is sent.** | **Free.** |
+| **Every 15 minutes** | Quick uptime checks, plus the browser errors the site's error catcher reported, plus progress on any automatic fix. | **Free.** |
+| A check finds a **new** problem | **One "Needs you" email**, with the details to fix it. The same problem is never emailed again while it's open. | One Haiku call (≈ US$0.005), if a Claude key is set |
+| A problem you were emailed about is fixed | "✅ Recovered" email. No recovery email for problems you weren't emailed about. | Free |
+| A browser error that is a **small UI bug** in `index.html` | **Automatic fix** (see below) and one short email saying what was broken and what changed, with an undo link. | ≈ US$0.10–0.50 per fix (Claude Sonnet 5) |
+| A browser error Site Agent can't or may not fix | One "Needs you" / "Needs your approval" email. | Free (or the fix attempt) |
 
-## Example message
+## Automatic fixes (small UI bugs only)
 
-A morning report on a healthy day:
+The site has a small **error catcher** (a script at the top of `index.html` and `fleet_drivers.html`). It sends browser errors, such as a button that throws or a page that crashes, to `agent_site_errors` via the `site-agent-errors` function. It sends no personal data and no typed values. When one is found, Site Agent:
 
-```
-📋 Morning report - Sat, 26 Sept 2026
+1. Starts from the **latest `main`**. It checks `WORKING_ON.md` and open pull requests, finds the cause in `index.html`, and writes the smallest fix.
+2. Opens a pull request from a `maint/auto-fix-<n>` branch, with a `WORKING_ON.md` line.
+3. Waits for the **site-check** GitHub workflow. It compiles the app and opens every page in a real browser with **fake data** (the live database is never touched). It also replays the bug: the error must happen on `main` and must be gone on the branch.
+4. Removes its `WORKING_ON.md` line, checks again, merges, and emails you. To undo, click **Revert** on the pull request.
 
-✅ All 21 checks passed - nothing needs your attention.
+What it may **never** merge on its own (enforced in code, `autofix_policy.ts`): more than 30 changed lines; anything touching data loading or saving, amounts or financial calculations, database structure, user roles, permissions or logins, deleting, the research assistant, or new scripts or links. Those become a pull request that waits for your approval. Data problems are emailed to you, never changed.
 
-📦 Orders: In transit 12 · due today/tomorrow 3 · late 0 · delivered yesterday 5 · new orders yesterday 7
-```
-
-A problem that is still open the next day shows up as `(open since 26 Sept)`, with the fix that was suggested earlier. It is not explained again.
+If a fixed error shows up again (from pages loaded after the fix went live), you get one email with the undo link.
 
 ## Estimated monthly cost (normal month)
 
 | Item | Assumption | Cost |
 |---|---|---|
-| Morning checks + 15-minute monitor | 30 reports, about 2,900 monitor runs | **US$0.00** |
+| Daily checks + 15-minute monitor | about 2,900 runs a month, no emails on normal days | **US$0.00** |
 | Explaining new problems (Claude Haiku) | about 5–10 new problems a month, ≈ US$0.005 each | **≈ US$0.03–0.05** |
+| Automatic fixes (Claude Sonnet 5) | a few small UI bugs a month, ≈ US$0.10–0.50 each | **≈ US$0–1.50** |
 | Questions | none (this agent isn't used for questions) | **US$0.00** |
 | Supabase / email | Everything fits inside normal plan limits; Resend's free plan covers 3,000 emails a month | **US$0.00** |
-| **Total** | | **≈ US$0.05 a month (under 10 cents)** |
+| **Total** | | **≈ US$0.05 a month without bugs; a few dollars at most with fixes (hard cap US$5)** |
 
 A bad month with 30 new problems would still be only ≈ US$0.15.
 
 Three things keep it bounded:
 
-- **Hard monthly cap:** `AI_MONTHLY_BUDGET_USD` (default **US$5**). When it's reached, all Site Agent AI calls stop until next month. Checks, reports and alerts keep working.
+- **Hard monthly cap:** `AI_MONTHLY_BUDGET_USD` (default **US$5**). When it's reached, all Site Agent AI calls stop until next month. Checks and alerts keep working.
 - **Spend tracking:** every Claude call is logged with its estimated cost in `agent_ai_calls`. Run the `status` job to see this month's spend (`ai.spent_this_month_usd`).
 - **Zero AI option:** set `AI_EXPLAIN_PROBLEMS=false` for zero automatic AI calls ever. Messages then arrive without the explanation.
 

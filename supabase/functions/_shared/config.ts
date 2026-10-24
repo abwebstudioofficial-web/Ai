@@ -45,6 +45,8 @@ export const config = {
   autoModel: env("AI_AUTO_MODEL", "claude-haiku-4-5"),
   // Explain new problems with AI (false = checks and alerts only, never any AI call).
   explainProblems: envBool("AI_EXPLAIN_PROBLEMS", true),
+  // Automatic fixes of small front-end bugs (setting: autofix_enabled). Needs a Claude key + GitHub token.
+  autofixEnabled: envBool("AUTOFIX_ENABLED", true),
   // Hard monthly cap on estimated Claude spend in US$ (0 = no cap). When reached, all AI
   // calls stop until next month; checks, reports and alerts keep working.
   monthlyBudgetUsd: Number.parseFloat(env("AI_MONTHLY_BUDGET_USD", "5")) || 0,
