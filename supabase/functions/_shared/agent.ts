@@ -1,6 +1,5 @@
-// The AI agent loop - runs ONLY when someone asks a question on Telegram ("chat"),
-// or to fix a small front-end bug the site's error catcher reported ("autofix", with its
-// own instructions and a small, restricted set of tools - see autofix.ts). A run is processed in chunks: each worker invocation does as many
+// The AI agent loop - runs ONLY when someone asks a question on Telegram ("chat").
+// Automatic fixes ("autofix" runs) are handed to the free Groq loop in autofix_groq.ts. A run is processed in chunks: each worker invocation does as many
 // Claude turns as fit in its time budget, saving every message to the database,
 // then hands the run back to the queue if there is more to do.
 import { Anthropic } from "./deps.ts";
@@ -10,7 +9,7 @@ import { apiTools, executeTool } from "./tools/index.ts";
 import { buildSystem } from "./prompt.ts";
 import { sendTelegram } from "./notify.ts";
 import { budgetBlock, friendlyAiError, recordAiCall } from "./ai_cost.ts";
-import { autofixRunEnded, autofixSystem, autofixTools } from "./autofix.ts";
+import { autofixRunEnded } from "./autofix.ts";
 import { processAutofixWithGroq } from "./autofix_groq.ts";
 import {
   claimRun,
@@ -143,12 +142,9 @@ export async function processRun(runId: string, deadline: number): Promise<"done
   }
 
   const client = new Anthropic({ apiKey: config.anthropicApiKey, maxRetries: 1 });
-  const isFix = run.kind === "autofix";
-  const system = isFix ? autofixSystem() : await buildSystem();
-  const toolset = isFix ? autofixTools : undefined;
-  const tools = apiTools(toolset);
-  // The auto-fixer's tools enforce their own rules (autofix_policy.ts), so no approval round-trips.
-  const ctx = { runId: run.id, conversationId: run.conversation_id, approved: isFix };
+  const system = await buildSystem();
+  const tools = apiTools();
+  const ctx = { runId: run.id, conversationId: run.conversation_id, approved: false };
   let turns = run.turns;
   let truncations = 0;
 
@@ -183,7 +179,7 @@ export async function processRun(runId: string, deadline: number): Promise<"done
 
       const response = await callClaude(client, await loadHistory(run.conversation_id), system, tools, deadline, finalAnswerOnly);
       turns = await recordTurn(run.id, response.usage as unknown as Record<string, unknown>);
-      await recordAiCall(response.model || config.model, isFix ? "autofix" : "chat", response.usage, run.id);
+      await recordAiCall(response.model || config.model, "chat", response.usage, run.id);
 
       switch (response.stop_reason) {
         case "tool_use": {
@@ -191,7 +187,7 @@ export async function processRun(runId: string, deadline: number): Promise<"done
           const calls = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
           const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
           for (const call of calls) {
-            const r = await executeTool(call.name, call.input, ctx, toolset);
+            const r = await executeTool(call.name, call.input, ctx);
             results.push({
               type: "tool_result",
               tool_use_id: call.id,
