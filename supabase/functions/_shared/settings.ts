@@ -51,6 +51,9 @@ export async function ensureSettings(force = false): Promise<void> {
     if (!envSet("AGENT_SUPABASE_PAT") && S.site_agent_supabase_pat) config.managementToken = S.site_agent_supabase_pat;
     if (!envSet("GITHUB_TOKEN") && S.site_agent_github_token) config.github.token = S.site_agent_github_token;
     if (!envSet("RESEND_API_KEY") && S.site_agent_resend_api_key) config.notify.resendApiKey = S.site_agent_resend_api_key;
+    if (!envSet("GROQ_API_KEY") && !envSet("LLM_API_KEY") && S.site_agent_groq_api_key) {
+      config.groqApiKey = S.site_agent_groq_api_key;
+    }
 
     // plain settings (agent_settings)
     if (!envSet("SITE_URL") && text(V.site_url)) config.siteUrl = text(V.site_url).replace(/\/+$/, "");
