@@ -21,14 +21,14 @@ It's a reporter, not a chat. (An optional Telegram bot can be added later for qu
 | **Every 15 minutes** | Quick uptime checks, plus the browser errors the site's error catcher reported, plus progress on any automatic fix. | **Free.** |
 | A check finds a **new** problem | **One "Needs you" email**, with the details to fix it. The same problem is never emailed again while it's open. | One Haiku call (≈ US$0.005), if a Claude key is set |
 | A problem you were emailed about is fixed | "✅ Recovered" email. No recovery email for problems you weren't emailed about. | Free |
-| A browser error that is a **small UI bug** in `index.html` | **Automatic fix** (see below) and one short email saying what was broken and what changed, with an undo link. | ≈ US$0.10–0.50 per fix (Claude Sonnet 5) |
+| A browser error that is a **small UI bug** in `index.html` | **Automatic fix** (see below) and one short email saying what was broken and what changed, with an undo link. | **Free** (Groq's free plan, the same key as the research assistant) |
 | A browser error Site Agent can't or may not fix | One "Needs you" / "Needs your approval" email. | Free (or the fix attempt) |
 
 ## Automatic fixes (small UI bugs only)
 
 The site has a small **error catcher** (a script at the top of `index.html` and `fleet_drivers.html`). It sends browser errors, such as a button that throws or a page that crashes, to `agent_site_errors` via the `site-agent-errors` function. It sends no personal data and no typed values. When one is found, Site Agent:
 
-1. Starts from the **latest `main`**. It checks `WORKING_ON.md` and open pull requests, finds the cause in `index.html`, and writes the smallest fix.
+1. Uses Groq's free AI (`openai/gpt-oss-120b`), told to write the fix in the site's own style (existing style constants, `cx()`, same syntax). It starts from the **latest `main`**. It checks `WORKING_ON.md` and open pull requests, finds the cause in `index.html`, and writes the smallest fix.
 2. Opens a pull request from a `maint/auto-fix-<n>` branch, with a `WORKING_ON.md` line.
 3. Waits for the **site-check** GitHub workflow. It compiles the app and opens every page in a real browser with **fake data** (the live database is never touched). It also replays the bug: the error must happen on `main` and must be gone on the branch.
 4. Removes its `WORKING_ON.md` line, checks again, merges, and emails you. To undo, click **Revert** on the pull request.
@@ -43,10 +43,10 @@ If a fixed error shows up again (from pages loaded after the fix went live), you
 |---|---|---|
 | Daily checks + 15-minute monitor | about 2,900 runs a month, no emails on normal days | **US$0.00** |
 | Explaining new problems (Claude Haiku) | about 5–10 new problems a month, ≈ US$0.005 each | **≈ US$0.03–0.05** |
-| Automatic fixes (Claude Sonnet 5) | a few small UI bugs a month, ≈ US$0.10–0.50 each | **≈ US$0–1.50** |
+| Automatic fixes (Groq, free plan) | at most 3 attempts a day | **US$0.00** |
 | Questions | none (this agent isn't used for questions) | **US$0.00** |
 | Supabase / email | Everything fits inside normal plan limits; Resend's free plan covers 3,000 emails a month | **US$0.00** |
-| **Total** | | **≈ US$0.05 a month without bugs; a few dollars at most with fixes (hard cap US$5)** |
+| **Total** | | **US$0.00** (Claude features are switched off) |
 
 A bad month with 30 new problems would still be only ≈ US$0.15.
 

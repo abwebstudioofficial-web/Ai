@@ -110,7 +110,7 @@ function ready(e: SiteError): boolean {
 
 function autofixSetupProblem(): string | null {
   if (!config.autofixEnabled) return "Automatic fixes are switched off (autofix_enabled setting).";
-  if (!config.anthropicApiKey) return "Automatic fixes need a Claude API key with credit, and none is set.";
+  if (!config.groqApiKey) return "Automatic fixes need a Groq API key (the GROQ_API_KEY secret), and none is set.";
   if (!githubEnabled()) return "Automatic fixes need a GitHub token for the logistix repository, and none is set.";
   return null;
 }
@@ -241,6 +241,11 @@ Steps:
 1. github_work_in_progress: if another session is already changing the same part of index.html, give up (say so).
 2. Find the code: github_read_file with path "index.html" and grep (component names from the stack, words from the error), then start_line/end_line to read the section. Never read the whole file.
 3. Find the root cause. Keep the code rules: the Supabase client is createLiteClient (only select, upsert, update, delete, eq, order, range, maybeSingle; no .insert(), no .limit()); all React hooks stay above any early return; SortTh stays at module scope; match the surrounding style.
+   Write the fix the way the rest of the site is written - it must look like the original author wrote it:
+   - Smallest change that fixes the root cause; don't reformat, rename, reorder or "improve" anything else.
+   - Reuse what exists: the style constants (inputCls, btnPrimary, btnSecondary, iconBtn, iconBtnDanger, ...), the cx(...) class helper, existing helper functions, state and handlers. No new libraries, no new CSS, no new icon sets (icons are the small SVG components already in the file).
+   - Same syntax as the code around it: plain function components, hooks from the destructured React hooks, double quotes, semicolons, 2-space indentation, Tailwind classes in the existing dark slate theme (bg-slate-900, text-slate-400, blue-600 accents ...).
+   - Read the lines around the change first and copy their patterns (how similar inputs, buttons or lists nearby are written).
 4. Write the fix as exact find/replace edits (each "find" must match exactly once; include a few surrounding lines).
 5. Write a reproduction for the automatic site check. It loads the app in a real browser as an admin with FAKE data: every Supabase table returns no rows unless you give rows in mock_data (rows as stored in the database: snake_case column names, the way fromDbRow reads them). Steps: {"nav": "<sidebar label>"}, {"click": "<Playwright selector, e.g. text=Save or button:has-text('Add')>"}, {"fill": ["<selector>", "text"]}, {"select": ["<selector>", "value"]}, {"press": ["<selector>", "Enter"]}, {"wait": 1000}. target_error = a distinctive part of the error message. The check runs the steps on the current main (the error must happen) and on your branch (it must not), plus opens every page and compares errors. Read the relevant JSX to get selectors right.
 6. Call autofix_submit once. Then end with a one-line summary.

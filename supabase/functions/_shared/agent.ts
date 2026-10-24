@@ -11,6 +11,7 @@ import { buildSystem } from "./prompt.ts";
 import { sendTelegram } from "./notify.ts";
 import { budgetBlock, friendlyAiError, recordAiCall } from "./ai_cost.ts";
 import { autofixRunEnded, autofixSystem, autofixTools } from "./autofix.ts";
+import { processAutofixWithGroq } from "./autofix_groq.ts";
 import {
   claimRun,
   finishRun,
@@ -131,6 +132,8 @@ export async function processRun(runId: string, deadline: number): Promise<"done
   if (deadline - Date.now() < config.minTurnMs) return "skipped"; // this worker is too old; the sweeper retries
   const run = await claimRun(runId, deadline - Date.now() + 15_000);
   if (!run) return "skipped";
+  // Automatic fixes use Groq's free plan (no Claude credit needed).
+  if (run.kind === "autofix") return await processAutofixWithGroq(run, deadline);
 
   if (!config.anthropicApiKey) {
     const msg = "ANTHROPIC_API_KEY is not set for the Edge Functions.";

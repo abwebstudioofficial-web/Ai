@@ -36,6 +36,21 @@ async function anthropicKeyWorks(): Promise<boolean | string> {
   }
 }
 
+/** Checks the Groq key with a free request (lists models). */
+async function groqKeyWorks(): Promise<boolean | string> {
+  if (!config.groqApiKey) return "no key";
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { authorization: `Bearer ${config.groqApiKey}` },
+      signal: AbortSignal.timeout(6_000),
+    });
+    await res.body?.cancel();
+    return res.ok ? true : `HTTP ${res.status}`;
+  } catch (e) {
+    return errorMessage(e);
+  }
+}
+
 export async function setupStatus(): Promise<Record<string, unknown>> {
   const [[counts], [claim], anthropicOk, spent] = await Promise.all([
     db()<{ rules: number; alerts: number; notifications: number; last_check: string | null }[]>`
@@ -72,6 +87,7 @@ export async function setupStatus(): Promise<Record<string, unknown>> {
     site_key_paths: config.siteKeyPaths,
     secrets: { ...secretSources },
     anthropic_key_works: anthropicOk,
+    autofix: { enabled: config.autofixEnabled, ai: `groq/${config.groqModel}`, groq_key_works: await groqKeyWorks() },
     email: {
       configured: Boolean(config.notify.resendApiKey && config.notify.emailFrom && config.notify.emailTo.length),
       recipients: config.notify.emailTo.length,
