@@ -9,7 +9,7 @@ export interface Notice {
   title: string;
   body: string;
   severity: Severity;
-  kind: "alert" | "report" | "approval" | "recovery" | "system";
+  kind: "alert" | "report" | "approval" | "recovery" | "system" | "autofix";
   /** Send even if below NOTIFY_MIN_SEVERITY (reports, approvals, explicit agent messages). */
   force?: boolean;
 }
@@ -20,6 +20,7 @@ const ICON: Record<Notice["kind"], (s: Severity) => string> = {
   approval: () => "🔐",
   recovery: () => "✅",
   system: () => "🤖",
+  autofix: () => "🔧",
 };
 
 export function formatNotice(n: Notice): string {

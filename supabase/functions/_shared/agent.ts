@@ -1,5 +1,5 @@
-// The chat agent loop - runs ONLY when someone asks a question on
-// Telegram. A run is processed in chunks: each worker invocation does as many
+// The AI agent loop - runs ONLY when someone asks a question on Telegram ("chat").
+// Automatic fixes ("autofix" runs) are handed to the free Groq loop in autofix_groq.ts. A run is processed in chunks: each worker invocation does as many
 // Claude turns as fit in its time budget, saving every message to the database,
 // then hands the run back to the queue if there is more to do.
 import { Anthropic } from "./deps.ts";
@@ -9,6 +9,8 @@ import { apiTools, executeTool } from "./tools/index.ts";
 import { buildSystem } from "./prompt.ts";
 import { sendTelegram } from "./notify.ts";
 import { budgetBlock, friendlyAiError, recordAiCall } from "./ai_cost.ts";
+import { autofixRunEnded } from "./autofix.ts";
+import { processAutofixWithGroq } from "./autofix_groq.ts";
 import {
   claimRun,
   finishRun,
@@ -108,8 +110,10 @@ async function replyOnTelegram(run: RunRow, text: string) {
   }
 }
 
-const onRunFinished = (run: RunRow, text: string) => replyOnTelegram(run, text);
-const onRunFailed = (run: RunRow, error: string) => replyOnTelegram(run, `Sorry - I hit an error: ${error}`);
+const onRunFinished = (run: RunRow, text: string) =>
+  run.kind === "autofix" ? autofixRunEnded(run.id, text, null) : replyOnTelegram(run, text);
+const onRunFailed = (run: RunRow, error: string) =>
+  run.kind === "autofix" ? autofixRunEnded(run.id, "", error) : replyOnTelegram(run, `Sorry - I hit an error: ${error}`);
 
 function isRetryable(e: unknown): boolean {
   if (e instanceof Anthropic.APIConnectionError) return true; // includes timeouts
@@ -127,6 +131,8 @@ export async function processRun(runId: string, deadline: number): Promise<"done
   if (deadline - Date.now() < config.minTurnMs) return "skipped"; // this worker is too old; the sweeper retries
   const run = await claimRun(runId, deadline - Date.now() + 15_000);
   if (!run) return "skipped";
+  // Automatic fixes use Groq's free plan (no Claude credit needed).
+  if (run.kind === "autofix") return await processAutofixWithGroq(run, deadline);
 
   if (!config.anthropicApiKey) {
     const msg = "ANTHROPIC_API_KEY is not set for the Edge Functions.";

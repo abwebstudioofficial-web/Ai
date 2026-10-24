@@ -7,6 +7,8 @@ export interface ReportProblem {
   check: CheckResult;
   alertId: number;
   isNew: boolean;
+  /** true only when the alert row was just created (first time this problem is seen) */
+  created: boolean;
   firstSeen: string;
   aiNote: string | null;
 }
@@ -63,7 +65,7 @@ export function sampleLine(row: unknown): string {
     .map(([k, v]) => `${k}: ${v}`).join(", ");
 }
 
-function examples(details: unknown, n = 3): string[] {
+export function examples(details: unknown, n = 3): string[] {
   const d = details as { sample?: unknown[] } | unknown[] | undefined;
   const rows = Array.isArray(d) ? d : Array.isArray(d?.sample) ? d!.sample! : [];
   return rows.slice(0, n).map(sampleLine);

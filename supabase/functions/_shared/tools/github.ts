@@ -8,16 +8,16 @@ import { encodeBase64 } from "../deps.ts";
 import { github, latestCommitHealth } from "../github_api.ts";
 import { type AgentTool, optBool, optNum, optStr, str } from "./types.ts";
 
-const enc = (p: string) => p.split("/").map(encodeURIComponent).join("/");
+export const enc = (p: string) => p.split("/").map(encodeURIComponent).join("/");
 
-function safePath(p: string): string {
+export function safePath(p: string): string {
   const clean = p.replace(/^\/+/, "");
   if (!clean || clean.split("/").some((s) => s === ".." || s === "")) throw new Error(`Invalid path: ${p}`);
   return clean;
 }
 
 /** Raw file text at a ref (works for large files like a single-file index.html), or null if missing. */
-async function rawFile(path: string, ref: string): Promise<{ text: string; sha: string } | null> {
+export async function rawFile(path: string, ref: string): Promise<{ text: string; sha: string } | null> {
   try {
     const meta = await github<{ sha: string; type: string }>(
       "GET",
@@ -83,7 +83,7 @@ const listFiles: AgentTool = {
   },
 };
 
-const readFile: AgentTool = {
+export const readFile: AgentTool = {
   name: "github_read_file",
   description:
     "Read a file from the website's repository (always the latest version of the main branch unless `ref` is given). " +
@@ -148,7 +148,7 @@ const readFile: AgentTool = {
   },
 };
 
-const searchCode: AgentTool = {
+export const searchCode: AgentTool = {
   name: "github_search_code",
   description: "Search across the repository with GitHub code search (finds which files mention something). " +
     "To find lines inside one big file, prefer github_read_file with `grep`.",
@@ -181,7 +181,7 @@ interface OpenPr {
 }
 
 /** What other people are working on right now: WORKING_ON.md on main + open PRs and the files they touch. */
-async function workInProgress(): Promise<
+export async function workInProgress(): Promise<
   { workingOn: string; prs: { number: number; title: string; branch: string; by: string; files: string[] }[] }
 > {
   const working = await rawFile("WORKING_ON.md", config.github.defaultBranch).catch(() => null);
@@ -196,7 +196,7 @@ async function workInProgress(): Promise<
   return { workingOn: working?.text.trim() || "(WORKING_ON.md is empty or missing)", prs };
 }
 
-const workInProgressTool: AgentTool = {
+export const workInProgressTool: AgentTool = {
   name: "github_work_in_progress",
   description:
     "Before planning any code change: shows WORKING_ON.md from main (what other people/sessions are currently changing) " +
@@ -209,7 +209,7 @@ const workInProgressTool: AgentTool = {
   },
 };
 
-const recentCommits: AgentTool = {
+export const recentCommits: AgentTool = {
   name: "github_recent_commits",
   description: "Recent commits on the main branch (what changed and when) plus the CI/deploy status of the latest commit. " +
     "Use it to connect a new breakage to a recent change.",

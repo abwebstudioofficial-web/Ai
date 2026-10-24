@@ -74,7 +74,8 @@ export async function upsertAlert(a: AlertInput): Promise<AlertOutcome> {
   }
 
   let notified: string[] | null = null;
-  if ((created || escalated) && a.notify !== false) {
+  // Emailed once, when the problem first appears (not again on escalation or repeats).
+  if (created && a.notify !== false) {
     notified = await notifyOwners({
       kind: "alert",
       severity: a.severity,
@@ -103,12 +104,15 @@ export async function setAlertStatus(
   return rows.length > 0;
 }
 
-/** Resolves the open alert with this dedupe key. Returns its title if one was open. */
-export async function resolveAlertByKey(key: string, note: string): Promise<string | null> {
-  const [row] = await db()<{ title: string }[]>`
+/**
+ * Resolves the open alert with this dedupe key. Returns its title and whether the
+ * developer was emailed about it (only those get a "Recovered" email), or null.
+ */
+export async function resolveAlertByKey(key: string, note: string): Promise<{ title: string; notified: boolean } | null> {
+  const [row] = await db()<{ title: string; notified: boolean }[]>`
     update public.agent_alerts
     set status = 'resolved', resolved_at = now(), resolution_note = ${note}
     where dedupe_key = ${key} and status <> 'resolved'
-    returning title`;
-  return row?.title ?? null;
+    returning title, notified_at is not null as notified`;
+  return row ?? null;
 }

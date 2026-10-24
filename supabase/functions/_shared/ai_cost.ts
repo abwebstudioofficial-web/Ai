@@ -26,6 +26,7 @@ export interface Usage {
 }
 
 export function estimateCostUsd(model: string, u: Usage): number {
+  if (model.startsWith("groq/")) return 0; // Groq's free plan
   const p = PRICES[model] ?? DEFAULT_PRICE;
   const n = (v: number | null | undefined) => (typeof v === "number" ? v : 0);
   const tokens = n(u.input_tokens) * p.input +
@@ -37,7 +38,7 @@ export function estimateCostUsd(model: string, u: Usage): number {
 
 export async function recordAiCall(
   model: string,
-  purpose: "chat" | "explain_problems",
+  purpose: "chat" | "explain_problems" | "autofix",
   usage: Usage,
   runId?: string | null,
 ): Promise<number> {

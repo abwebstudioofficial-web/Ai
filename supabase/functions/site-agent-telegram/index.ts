@@ -61,9 +61,9 @@ async function handle(chatId: string, text: string, from: string) {
       }
 
       case "/check": {
-        await reply("Running the full check now - the report arrives in a minute or two.");
-        await runDailyCheck(); // sends the report to every configured channel
-        return;
+        await reply("Running the full check now - one or two minutes.");
+        const { report } = await runDailyCheck(); // new problems are also emailed (once each)
+        return await reply(report);
       }
 
       case "/cost": {

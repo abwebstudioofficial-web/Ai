@@ -51,6 +51,9 @@ export async function ensureSettings(force = false): Promise<void> {
     if (!envSet("AGENT_SUPABASE_PAT") && S.site_agent_supabase_pat) config.managementToken = S.site_agent_supabase_pat;
     if (!envSet("GITHUB_TOKEN") && S.site_agent_github_token) config.github.token = S.site_agent_github_token;
     if (!envSet("RESEND_API_KEY") && S.site_agent_resend_api_key) config.notify.resendApiKey = S.site_agent_resend_api_key;
+    if (!envSet("GROQ_API_KEY") && !envSet("LLM_API_KEY") && S.site_agent_groq_api_key) {
+      config.groqApiKey = S.site_agent_groq_api_key;
+    }
 
     // plain settings (agent_settings)
     if (!envSet("SITE_URL") && text(V.site_url)) config.siteUrl = text(V.site_url).replace(/\/+$/, "");
@@ -71,6 +74,7 @@ export async function ensureSettings(force = false): Promise<void> {
     if (!envSet("AI_MONTHLY_BUDGET_USD") && text(V.ai_monthly_budget_usd) !== "" && Number.isFinite(budget)) {
       config.monthlyBudgetUsd = budget;
     }
+    if (!envSet("AUTOFIX_ENABLED") && typeof V.autofix_enabled === "boolean") config.autofixEnabled = V.autofix_enabled;
     if (!envSet("AI_EXPLAIN_PROBLEMS") && typeof V.ai_explain_problems === "boolean") {
       config.explainProblems = V.ai_explain_problems;
     }
